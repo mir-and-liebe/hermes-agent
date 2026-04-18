@@ -76,8 +76,8 @@ def _handle_roots(args: Namespace, human: bool) -> None:
 
 
 def _handle_index(args: Namespace, human: bool) -> None:
+    from workspace import get_indexer
     from workspace.config import load_workspace_config
-    from workspace.indexer import index_workspace
 
     config = load_workspace_config()
 
@@ -130,7 +130,8 @@ def _handle_index(args: Namespace, human: bool) -> None:
         progress_fn = _stderr_progress
 
     try:
-        summary = index_workspace(config, progress=progress_fn)
+        indexer = get_indexer(config)
+        summary = indexer.index(progress=progress_fn)
     finally:
         if human:
             try:
@@ -158,9 +159,9 @@ def _handle_index(args: Namespace, human: bool) -> None:
 
 
 def _handle_search(args: Namespace, human: bool) -> None:
+    from workspace import get_indexer
     from workspace.config import load_workspace_config
     from workspace.constants import resolve_path_prefix
-    from workspace.search import search_workspace
 
     config = load_workspace_config()
     if not config.enabled:
@@ -173,10 +174,10 @@ def _handle_search(args: Namespace, human: bool) -> None:
     path_prefix = resolve_path_prefix(raw_path)
     file_glob = getattr(args, "glob", None)
 
-    results = search_workspace(
+    indexer = get_indexer(config)
+    results = indexer.search(
         query,
-        config,
-        limit=limit,
+        limit=limit or config.knowledgebase.search.default_limit,
         path_prefix=path_prefix,
         file_glob=file_glob,
     )

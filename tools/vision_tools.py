@@ -318,7 +318,13 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
     else:
         data_url = None  # defer full encode; try Pillow resize first
 
-    from PIL import Image
+    try:
+        from PIL import Image
+    except ImportError:
+        raise ImportError(
+            "Pillow is required for image resizing. "
+            "Install with: pip install hermes-agent[cli]"
+        ) from None
     import io as _io
 
     logger.info("Image file is %.1f MB (estimated base64 %.1f MB, limit %.1f MB), auto-resizing...",

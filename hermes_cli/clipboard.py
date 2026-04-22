@@ -395,7 +395,13 @@ def _wayland_save(dest: Path) -> bool:
 
 def _convert_to_png(path: Path) -> bool:
     """Convert an image file to PNG in-place (requires Pillow or ImageMagick)."""
-    from PIL import Image
+    try:
+        from PIL import Image
+    except ImportError:
+        raise ImportError(
+            "Pillow is required for clipboard image conversion. "
+            "Install with: pip install hermes-agent[cli]"
+        ) from None
     try:
         img = Image.open(path)
         img.save(path, "PNG")

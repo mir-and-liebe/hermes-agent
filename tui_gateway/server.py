@@ -238,7 +238,13 @@ def _estimate_image_tokens(width: int, height: int) -> int:
 
 
 def _image_meta(path: Path) -> dict:
-    from PIL import Image
+    try:
+        from PIL import Image
+    except ImportError:
+        raise ImportError(
+            "Pillow is required for image metadata extraction. "
+            "Install with: pip install hermes-agent[cli]"
+        ) from None
 
     meta = {"name": path.name}
     try:

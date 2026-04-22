@@ -1196,7 +1196,13 @@ class DiscordAdapter(BasePlatformAdapter):
             try:
                 import base64
 
-                from mutagen.oggopus import OggOpus
+                try:
+                    from mutagen.oggopus import OggOpus
+                except ImportError:
+                    raise ImportError(
+                        "mutagen is required for Discord voice messages. "
+                        "Install with: pip install hermes-agent[messaging]"
+                    ) from None
 
                 duration_secs = 5.0
                 try:

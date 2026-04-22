@@ -185,7 +185,13 @@ def proxy_kwargs_for_bot(proxy_url: str | None) -> dict:
     if not proxy_url:
         return {}
     if proxy_url.lower().startswith("socks"):
-        from aiohttp_socks import ProxyConnector
+        try:
+            from aiohttp_socks import ProxyConnector
+        except ImportError:
+            raise ImportError(
+                "aiohttp-socks is required for SOCKS proxy support. "
+                "Install with: pip install hermes-agent[messaging]"
+            ) from None
 
         connector = ProxyConnector.from_url(proxy_url, rdns=True)
         return {"connector": connector}
@@ -210,7 +216,13 @@ def proxy_kwargs_for_aiohttp(proxy_url: str | None) -> tuple[dict, dict]:
     if not proxy_url:
         return {}, {}
     if proxy_url.lower().startswith("socks"):
-        from aiohttp_socks import ProxyConnector
+        try:
+            from aiohttp_socks import ProxyConnector
+        except ImportError:
+            raise ImportError(
+                "aiohttp-socks is required for SOCKS proxy support. "
+                "Install with: pip install hermes-agent[messaging]"
+            ) from None
 
         connector = ProxyConnector.from_url(proxy_url, rdns=True)
         return {"connector": connector}, {}

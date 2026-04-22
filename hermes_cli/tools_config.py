@@ -754,7 +754,13 @@ def _estimate_tool_tokens() -> Dict[str, int]:
     if _tool_token_cache is not None:
         return _tool_token_cache
 
-    import tiktoken
+    try:
+        import tiktoken
+    except ImportError:
+        raise ImportError(
+            "tiktoken is required for tool token estimation. "
+            "Install with: pip install hermes-agent[cli]"
+        ) from None
     enc = tiktoken.get_encoding("cl100k_base")
 
     try:

@@ -71,7 +71,13 @@ def main():
 
     ref_text = ref_text_path.read_text(encoding="utf-8").strip()
 
-    from neutts import NeuTTS
+    try:
+        from neutts import NeuTTS
+    except ImportError:
+        raise ImportError(
+            "neutts is required for local TTS synthesis. "
+            "Install with: pip install hermes-agent[tts-local]"
+        ) from None
 
     tts = NeuTTS(
         backbone_repo=args.model,
@@ -86,7 +92,13 @@ def main():
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    import soundfile as sf
+    try:
+        import soundfile as sf
+    except ImportError:
+        raise ImportError(
+            "soundfile is required for audio output. "
+            "Install with: pip install hermes-agent[tts-local]"
+        ) from None
     sf.write(str(out_path), wav, 24000)
 
     print(f"OK: {out_path}", file=sys.stderr)

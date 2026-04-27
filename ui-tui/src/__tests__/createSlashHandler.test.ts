@@ -85,6 +85,15 @@ describe('createSlashHandler', () => {
     expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
   })
 
+  it('opens the learning ledger locally', () => {
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/learned')).toBe(true)
+    expect(getOverlayState().learningLedger).toBe(true)
+    expect(ctx.gateway.rpc).not.toHaveBeenCalled()
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+  })
+
   it('routes /skills install <name> to skills.manage without opening overlay', () => {
     const ctx = buildCtx()
 

@@ -380,6 +380,13 @@ export const opsCommands: SlashCommand[] = [
   },
 
   {
+    aliases: ['growth', 'learned'],
+    help: 'show memories, skills, recalls, and integrations Hermes has accumulated',
+    name: 'learning',
+    run: () => patchOverlayState({ learningLedger: true })
+  },
+
+  {
     help: 'browse, inspect, install skills',
     name: 'skills',
     run: (arg, ctx) => {

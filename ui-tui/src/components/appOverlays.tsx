@@ -7,6 +7,7 @@ import { $overlayState, patchOverlayState } from '../app/overlayStore.js'
 import { $uiState } from '../app/uiStore.js'
 
 import { FloatBox } from './appChrome.js'
+import { LearningLedger } from './learningLedger.js'
 import { MaskedPrompt } from './maskedPrompt.js'
 import { ModelPicker } from './modelPicker.js'
 import { OverlayHint } from './overlayControls.js'
@@ -103,7 +104,13 @@ export function FloatingOverlays({
   const overlay = useStore($overlayState)
   const ui = useStore($uiState)
 
-  const hasAny = overlay.modelPicker || overlay.pager || overlay.picker || overlay.skillsHub || completions.length
+  const hasAny =
+    overlay.learningLedger ||
+    overlay.modelPicker ||
+    overlay.pager ||
+    overlay.picker ||
+    overlay.skillsHub ||
+    completions.length
 
   if (!hasAny) {
     return null
@@ -144,6 +151,12 @@ export function FloatingOverlays({
       {overlay.skillsHub && (
         <FloatBox color={ui.theme.color.bronze}>
           <SkillsHub gw={gw} onClose={() => patchOverlayState({ skillsHub: false })} t={ui.theme} />
+        </FloatBox>
+      )}
+
+      {overlay.learningLedger && (
+        <FloatBox color={ui.theme.color.bronze}>
+          <LearningLedger gw={gw} onClose={() => patchOverlayState({ learningLedger: false })} t={ui.theme} />
         </FloatBox>
       )}
 

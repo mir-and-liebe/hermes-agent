@@ -92,6 +92,10 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       return patchOverlayState({ skillsHub: false })
     }
 
+    if (overlay.learningLedger) {
+      return patchOverlayState({ learningLedger: false })
+    }
+
     if (overlay.picker) {
       return patchOverlayState({ picker: false })
     }

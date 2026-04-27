@@ -62,6 +62,7 @@ export interface OverlayState {
   approval: ApprovalReq | null
   clarify: ClarifyReq | null
   confirm: ConfirmReq | null
+  learningLedger: boolean
   modelPicker: boolean
   pager: null | PagerState
   picker: boolean

@@ -5065,6 +5065,22 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5024, str(e))
 
 
+@method("learning.ledger")
+def _(rid, params: dict) -> dict:
+    try:
+        from hermes_cli.learning_ledger import build_learning_ledger
+
+        return _ok(
+            rid,
+            build_learning_ledger(
+                _get_db(),
+                limit=int(params.get("limit", 80) or 80),
+            ),
+        )
+    except Exception as e:
+        return _err(rid, 5025, str(e))
+
+
 # ── Methods: shell ───────────────────────────────────────────────────
 
 

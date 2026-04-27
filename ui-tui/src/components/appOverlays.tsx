@@ -163,7 +163,12 @@ export function FloatingOverlays({
 
       {overlay.learningLedger && (
         <FloatBox color={ui.theme.color.border} width={overlayWidth}>
-          <LearningLedger gw={gw} onClose={() => patchOverlayState({ learningLedger: false })} t={ui.theme} />
+          <LearningLedger
+            gw={gw}
+            onClose={() => patchOverlayState({ learningLedger: false })}
+            t={ui.theme}
+            width={completionInnerWidth}
+          />
         </FloatBox>
       )}
 

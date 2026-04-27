@@ -38,14 +38,14 @@ const fmtTime = (ts?: null | number) => {
   return days <= 0 ? 'today' : `${days}d ago`
 }
 
-export function LearningLedger({ gw, onClose, t }: LearningLedgerProps) {
+export function LearningLedger({ gw, onClose, t, width: fixedWidth }: LearningLedgerProps) {
   const [ledger, setLedger] = useState<LearningLedgerResponse | null>(null)
   const [idx, setIdx] = useState(0)
   const [expanded, setExpanded] = useState(false)
   const [err, setErr] = useState('')
   const [loading, setLoading] = useState(true)
   const { stdout } = useStdout()
-  const width = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, (stdout?.columns ?? 80) - EDGE_GUTTER))
+  const width = fixedWidth ?? Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, (stdout?.columns ?? 80) - EDGE_GUTTER))
 
   useEffect(() => {
     gw.request<LearningLedgerResponse>('learning.ledger', { limit: 120 })
@@ -60,8 +60,9 @@ export function LearningLedger({ gw, onClose, t }: LearningLedgerProps) {
   const items = ledger?.items ?? []
   const selected = items[idx]
   const detailOpen = expanded && !!selected
-  const listWidth = detailOpen ? Math.max(38, Math.floor(width * 0.48)) : width
-  const detailWidth = Math.max(28, width - listWidth - 3)
+  const detailGap = detailOpen ? 2 : 0
+  const listWidth = detailOpen ? Math.max(36, Math.floor((width - detailGap) * 0.7)) : width
+  const detailWidth = detailOpen ? Math.max(24, width - listWidth - detailGap) : 0
   const counts = useMemo(
     () =>
       Object.entries(ledger?.counts ?? {})
@@ -149,8 +150,8 @@ export function LearningLedger({ gw, onClose, t }: LearningLedgerProps) {
       ) : null}
       {offset > 0 && <Text color={t.color.muted}> ↑ {offset} more</Text>}
 
-      <Box flexDirection="row" gap={1} width={width}>
-        <Box flexDirection="column" width={listWidth}>
+      <Box flexDirection="row" width={width}>
+        <Box flexDirection="column" flexShrink={0} width={listWidth}>
           {visible.map((item, i) => {
             const absolute = offset + i
             const active = absolute === idx
@@ -168,7 +169,12 @@ export function LearningLedger({ gw, onClose, t }: LearningLedgerProps) {
           })}
         </Box>
 
-        {detailOpen && selected ? <LedgerDetails item={selected} t={t} width={detailWidth} /> : null}
+        {detailOpen && selected ? (
+          <>
+            <Box flexShrink={0} width={detailGap} />
+            <LedgerDetails item={selected} t={t} width={detailWidth} />
+          </>
+        ) : null}
       </Box>
 
       {offset + VISIBLE_ROWS < items.length && (
@@ -188,7 +194,7 @@ function LedgerRow({ active, index, item, t, width }: LedgerRowProps) {
   const title = item.type === 'memory' || item.type === 'user' ? item.summary : item.name
 
   return (
-    <Box width={width}>
+    <Box flexShrink={0} width={width}>
       <Text bold={active} color={active ? t.color.accent : t.color.muted} inverse={active} wrap="truncate-end">
         {active ? '▸ ' : '  '}
         {index}. {icon} {verb}: {title}
@@ -206,7 +212,7 @@ function LedgerDetails({ item, t, width }: LedgerDetailsProps) {
   const memoryLike = item.type === 'memory' || item.type === 'user'
 
   return (
-    <Box borderColor={t.color.muted} borderStyle="single" flexDirection="column" paddingX={1} width={width}>
+    <Box borderColor={t.color.muted} borderStyle="single" flexDirection="column" flexShrink={0} paddingX={1} width={width}>
       <Text bold color={t.color.accent}>
         Details
       </Text>
@@ -262,4 +268,5 @@ interface LearningLedgerProps {
   gw: GatewayClient
   onClose: () => void
   t: Theme
+  width?: number
 }

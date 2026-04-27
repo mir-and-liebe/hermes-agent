@@ -184,7 +184,7 @@ def learning_event_from_tool(
         return {
             "type": target if target in {"memory", "user"} else "memory",
             "verb": "remembered",
-            "title": _one_line(content, max_len=120) if content else f"{target} updated",
+            "title": _memory_title(content) if content else f"{target} updated",
             "summary": "Durable memory updated",
             "source": "memory",
             "via": "memory",
@@ -234,6 +234,15 @@ def _recall_title(data: Any) -> str:
         return str(data.get("query") or "").strip()
     first = results[0] if isinstance(results[0], dict) else {}
     return str(first.get("title") or first.get("preview") or data.get("query") or "").strip()
+
+
+def _memory_title(content: str) -> str:
+    title = _one_line(content, max_len=120)
+    lowered = title.lower()
+    for prefix in ("the user ", "user "):
+        if lowered.startswith(prefix):
+            return title[len(prefix):].lstrip()
+    return title
 
 
 def _integration_items() -> list[LedgerItem]:

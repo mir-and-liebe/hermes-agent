@@ -64,6 +64,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
   let pendingThinkingStatus = ''
   let thinkingStatusTimer: null | ReturnType<typeof setTimeout> = null
+  let pendingLearning: string[] = []
 
   // Inject the disk-save callback into turnController so recordMessageComplete
   // can fire-and-forget a persist without having to plumb a gateway ref around.
@@ -274,17 +275,14 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         const verb = String(ev.payload?.verb ?? ev.payload?.type ?? 'learned').trim()
 
         if (title) {
-          appendMessage({
-            kind: 'learning',
-            role: 'system',
-            text: `${verb}: ${title}`
-          })
+          pendingLearning = pushUnique(4)(pendingLearning, `${verb}: ${title}`)
         }
 
         return
       }
 
       case 'message.start':
+        pendingLearning = []
         turnController.startMessage()
 
         return
@@ -609,6 +607,8 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         if (!wasInterrupted) {
           const msgs: Msg[] = finalMessages.length ? finalMessages : [{ role: 'assistant', text: finalText }]
           msgs.forEach(appendMessage)
+          pendingLearning.forEach(text => appendMessage({ kind: 'learning', role: 'system', text }))
+          pendingLearning = []
 
           if (bellOnComplete && stdout?.isTTY) {
             stdout.write('\x07')

@@ -2721,6 +2721,8 @@ def test_session_most_recent_handles_db_unavailable(monkeypatch):
     )
 
     assert resp["result"]["session_id"] is None
+
+
 # ── browser.manage ───────────────────────────────────────────────────
 
 
@@ -3010,3 +3012,39 @@ def test_browser_manage_disconnect_drops_env_and_cleans(monkeypatch):
     assert "BROWSER_CDP_URL" not in os.environ
     # Two cleanups: once before env removal, once after, matching connect.
     assert cleanup_count["n"] == 2
+
+
+# ── reload.env ───────────────────────────────────────────────────────
+
+
+def test_reload_env_rpc_calls_hermes_cli_reload_env(monkeypatch):
+    """reload.env mirrors classic CLI's `/reload` — re-reads ~/.hermes/.env
+    into the gateway process and reports the count of vars updated."""
+    calls = {"n": 0}
+
+    def _fake_reload():
+        calls["n"] += 1
+        return 7
+
+    fake = types.SimpleNamespace(reload_env=_fake_reload)
+    with patch.dict(sys.modules, {"hermes_cli.config": fake}):
+        resp = server.handle_request(
+            {"id": "1", "method": "reload.env", "params": {}}
+        )
+
+    assert resp["result"] == {"updated": 7}
+    assert calls["n"] == 1
+
+
+def test_reload_env_rpc_surfaces_errors(monkeypatch):
+    def _broken():
+        raise RuntimeError("env path locked")
+
+    fake = types.SimpleNamespace(reload_env=_broken)
+    with patch.dict(sys.modules, {"hermes_cli.config": fake}):
+        resp = server.handle_request(
+            {"id": "1", "method": "reload.env", "params": {}}
+        )
+
+    assert "error" in resp
+    assert "env path locked" in resp["error"]["message"]

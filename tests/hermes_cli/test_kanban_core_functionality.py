@@ -1526,3 +1526,157 @@ def test_completed_event_payload_summary_none_when_missing(kanban_home):
         assert comp.payload.get("summary") is None
     finally:
         conn.close()
+
+
+# -------------------------------------------------------------------------
+# Deep-scan fixes (Apr 2026 second audit)
+# -------------------------------------------------------------------------
+
+def test_complete_never_claimed_task_synthesizes_run(kanban_home):
+    """complete_task on a ready (never-claimed) task must persist the
+    handoff instead of silently dropping summary/metadata."""
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="skip claim", assignee="worker")
+        # Task is in 'ready' state with no run opened.
+        assert kb.list_runs(conn, tid) == []
+        ok = kb.complete_task(
+            conn, tid,
+            summary="did it manually",
+            metadata={"reason": "human intervention"},
+        )
+        assert ok is True
+
+        runs = kb.list_runs(conn, tid)
+        assert len(runs) == 1, f"expected 1 synthetic run, got {len(runs)}"
+        r = runs[0]
+        assert r.outcome == "completed"
+        assert r.summary == "did it manually"
+        assert r.metadata == {"reason": "human intervention"}
+        # Zero-duration synthetic run.
+        assert r.started_at == r.ended_at
+        # Task pointer still NULL (we never claimed, never opened a run).
+        assert kb.get_task(conn, tid).current_run_id is None
+
+        # Event carries the synthetic run_id.
+        evts = [e for e in kb.list_events(conn, tid) if e.kind == "completed"]
+        assert len(evts) == 1
+        assert evts[0].run_id == r.id
+    finally:
+        conn.close()
+
+
+def test_block_never_claimed_task_synthesizes_run(kanban_home):
+    """block_task on a ready task must persist --reason on a synthetic run."""
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="drop this", assignee="worker")
+        ok = kb.block_task(conn, tid, reason="deprioritized")
+        assert ok is True
+
+        runs = kb.list_runs(conn, tid)
+        assert len(runs) == 1
+        r = runs[0]
+        assert r.outcome == "blocked"
+        assert r.summary == "deprioritized"
+        assert r.started_at == r.ended_at
+
+        evts = [e for e in kb.list_events(conn, tid) if e.kind == "blocked"]
+        assert evts[0].run_id == r.id
+    finally:
+        conn.close()
+
+
+def test_complete_never_claimed_without_handoff_skips_synthesis(kanban_home):
+    """If a bulk-complete passes no summary/metadata/result, don't spam
+    the runs table with empty synthetic rows."""
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="simple", assignee="worker")
+        ok = kb.complete_task(conn, tid)  # no handoff fields
+        assert ok is True
+        assert kb.list_runs(conn, tid) == []  # no synthetic row
+    finally:
+        conn.close()
+
+
+def test_event_dataclass_carries_run_id(kanban_home):
+    """list_events and the Event dataclass must expose run_id so
+    downstream consumers (notifier, dashboard) can group by attempt."""
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="x", assignee="worker")
+        kb.claim_task(conn, tid)
+        run_id = kb.latest_run(conn, tid).id
+        kb.complete_task(conn, tid, summary="done")
+
+        events = kb.list_events(conn, tid)
+        kinds_with_run = {
+            e.kind: e.run_id for e in events if e.run_id is not None
+        }
+        # 'created' should NOT have a run_id (task-scoped).
+        created = [e for e in events if e.kind == "created"][0]
+        assert created.run_id is None
+        # 'claimed' and 'completed' must have run_id.
+        assert kinds_with_run.get("claimed") == run_id
+        assert kinds_with_run.get("completed") == run_id
+    finally:
+        conn.close()
+
+
+def test_unseen_events_for_sub_includes_run_id(kanban_home):
+    """Gateway notifier path must also surface run_id on events."""
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="notify test", assignee="worker")
+        kb.add_notify_sub(
+            conn, task_id=tid, platform="telegram",
+            chat_id="12345", thread_id="",
+        )
+        kb.claim_task(conn, tid)
+        run_id = kb.latest_run(conn, tid).id
+        kb.complete_task(conn, tid, summary="notify-ready")
+
+        cursor, events = kb.unseen_events_for_sub(
+            conn, task_id=tid, platform="telegram",
+            chat_id="12345", thread_id="",
+            kinds=("completed",),
+        )
+        assert len(events) == 1
+        assert events[0].run_id == run_id
+    finally:
+        conn.close()
+
+
+def test_claim_task_recovers_from_invariant_leak(kanban_home):
+    """Belt-and-suspenders: if a prior run somehow leaked (stranded
+    current_run_id on a ready task), claim_task should recover rather
+    than strand it further."""
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="invariant test", assignee="worker")
+        # Manually engineer the invariant violation: create a run, then
+        # flip status back to 'ready' without closing the run.
+        kb.claim_task(conn, tid)
+        leaked_run_id = kb.latest_run(conn, tid).id
+        conn.execute(
+            "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
+            "claim_expires = NULL "
+            "WHERE id = ?", (tid,),
+        )
+        conn.commit()
+        # The leaked run is still open.
+        assert kb.get_run(conn, leaked_run_id).ended_at is None
+
+        # Now re-claim — the defensive recovery must close the leak.
+        claimed = kb.claim_task(conn, tid)
+        assert claimed is not None
+        leaked = kb.get_run(conn, leaked_run_id)
+        assert leaked.ended_at is not None
+        assert leaked.outcome == "reclaimed"
+        # New run opened and pointed to.
+        new_run = kb.latest_run(conn, tid)
+        assert new_run.id != leaked_run_id
+        assert new_run.ended_at is None
+    finally:
+        conn.close()

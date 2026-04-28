@@ -757,3 +757,27 @@ def test_patch_status_archive_closes_running_run(client):
         assert kb.latest_run(conn, tid).outcome == "reclaimed"
     finally:
         conn.close()
+
+
+def test_event_dict_includes_run_id(client):
+    """GET /tasks/:id returns events with run_id populated."""
+    r = client.post("/api/plugins/kanban/tasks", json={"title": "e", "assignee": "worker"})
+    tid = r.json()["task"]["id"]
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        kb.claim_task(conn, tid)
+        run_id = kb.latest_run(conn, tid).id
+        kb.complete_task(conn, tid, summary="wss")
+    finally:
+        conn.close()
+
+    r = client.get(f"/api/plugins/kanban/tasks/{tid}")
+    assert r.status_code == 200
+    events = r.json()["events"]
+    # Every event in the response must have a run_id key (None or int).
+    for e in events:
+        assert "run_id" in e, f"missing run_id in event: {e}"
+    # completed event must have the actual run_id.
+    comp = [e for e in events if e["kind"] == "completed"]
+    assert comp[0]["run_id"] == run_id

@@ -114,6 +114,7 @@ def _event_dict(event: kanban_db.Event) -> dict[str, Any]:
         "kind": event.kind,
         "payload": event.payload,
         "created_at": event.created_at,
+        "run_id": event.run_id,
     }
 
 
@@ -788,7 +789,7 @@ async def stream_events(ws: WebSocket):
             conn = kanban_db.connect()
             try:
                 rows = conn.execute(
-                    "SELECT id, task_id, kind, payload, created_at "
+                    "SELECT id, task_id, run_id, kind, payload, created_at "
                     "FROM task_events WHERE id > ? ORDER BY id ASC LIMIT 200",
                     (cursor_val,),
                 ).fetchall()
@@ -802,6 +803,7 @@ async def stream_events(ws: WebSocket):
                     out.append({
                         "id": r["id"],
                         "task_id": r["task_id"],
+                        "run_id": r["run_id"],
                         "kind": r["kind"],
                         "payload": payload,
                         "created_at": r["created_at"],

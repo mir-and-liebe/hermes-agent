@@ -695,6 +695,7 @@
 }
 .hermes-kanban-run--active  { border-left-color: #3fb97d; }
 .hermes-kanban-run--completed { border-left-color: #4a8cd1; }
+.hermes-kanban-run--ended { border-left-color: #6b7280; }  /* generic fallback when outcome is unset */
 .hermes-kanban-run--blocked { border-left-color: var(--color-destructive, #d14a4a); }
 .hermes-kanban-run--crashed,
 .hermes-kanban-run--timed_out,

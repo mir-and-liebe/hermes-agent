@@ -260,7 +260,7 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                          help="Only show events from tasks in this tenant")
     p_watch.add_argument("--kinds", default=None,
                          help="Comma-separated event kinds to include "
-                              "(e.g. 'completed,blocked,spawn_auto_blocked')")
+                              "(e.g. 'completed,blocked,gave_up,crashed,timed_out')")
     p_watch.add_argument("--interval", type=float, default=0.5,
                          help="Poll interval in seconds (default: 0.5)")
 

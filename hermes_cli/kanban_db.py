@@ -206,6 +206,7 @@ class Event:
     kind: str
     payload: Optional[dict]
     created_at: int
+    run_id: Optional[int] = None
 
 
 # ---------------------------------------------------------------------------
@@ -874,6 +875,7 @@ def list_events(conn: sqlite3.Connection, task_id: str) -> list[Event]:
                 kind=r["kind"],
                 payload=payload,
                 created_at=r["created_at"],
+                run_id=(int(r["run_id"]) if "run_id" in r.keys() and r["run_id"] is not None else None),
             )
         )
     return out
@@ -967,6 +969,57 @@ def _current_run_id(conn: sqlite3.Connection, task_id: str) -> Optional[int]:
     return int(row["current_run_id"]) if row and row["current_run_id"] else None
 
 
+def _synthesize_ended_run(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    outcome: str,
+    summary: Optional[str] = None,
+    error: Optional[str] = None,
+    metadata: Optional[dict] = None,
+) -> int:
+    """Insert a zero-duration, already-closed run row.
+
+    Used when a terminal transition happens on a task that was never
+    claimed (CLI user calling ``hermes kanban complete <ready-task>
+    --summary X``, or dashboard "mark done" on a ready task). Without
+    this, the handoff fields (summary / metadata / error) would be
+    silently dropped: ``_end_run`` is a no-op because there's no
+    current run.
+
+    The synthetic run has ``started_at == ended_at == now`` so it
+    shows up in attempt history as "instant" and doesn't skew elapsed
+    stats. Caller is responsible for leaving ``current_run_id`` NULL
+    (or for clearing it elsewhere in the same txn) since this
+    function does NOT touch the tasks row.
+    """
+    now = int(time.time())
+    trow = conn.execute(
+        "SELECT assignee, current_step_key FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    profile = trow["assignee"] if trow else None
+    step_key = trow["current_step_key"] if trow else None
+    cur = conn.execute(
+        """
+        INSERT INTO task_runs (
+            task_id, profile, step_key,
+            status, outcome,
+            summary, error, metadata,
+            started_at, ended_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            task_id, profile, step_key,
+            outcome, outcome,
+            summary, error,
+            json.dumps(metadata, ensure_ascii=False) if metadata else None,
+            now, now,
+        ),
+    )
+    return int(cur.lastrowid or 0)
+
+
 # ---------------------------------------------------------------------------
 # Dependency resolution (todo -> ready)
 # ---------------------------------------------------------------------------
@@ -1020,6 +1073,26 @@ def claim_task(
     lock = claimer or _claimer_id()
     expires = now + int(ttl_seconds)
     with write_txn(conn):
+        # Defensive: if a prior run somehow leaked (invariant violation from
+        # an unknown code path), close it as 'reclaimed' so we don't strand
+        # it when the CAS resets the pointer below. No-op when the invariant
+        # holds (the common case).
+        stale = conn.execute(
+            "SELECT current_run_id FROM tasks WHERE id = ? AND status = 'ready'",
+            (task_id,),
+        ).fetchone()
+        if stale and stale["current_run_id"]:
+            conn.execute(
+                """
+                UPDATE task_runs
+                   SET status = 'reclaimed', outcome = 'reclaimed',
+                       summary = COALESCE(summary, 'invariant recovery on re-claim'),
+                       ended_at = ?,
+                       claim_lock = NULL, claim_expires = NULL, worker_pid = NULL
+                 WHERE id = ? AND ended_at IS NULL
+                """,
+                (now, int(stale["current_run_id"])),
+            )
         cur = conn.execute(
             """
             UPDATE tasks
@@ -1183,6 +1256,17 @@ def complete_task(
             summary=summary if summary is not None else result,
             metadata=metadata,
         )
+        # If complete_task was called on a never-claimed task (ready or
+        # blocked → done with no run in flight), synthesize a
+        # zero-duration run so the handoff fields are persisted in
+        # attempt history instead of silently lost.
+        if run_id is None and (summary or metadata or result):
+            run_id = _synthesize_ended_run(
+                conn, task_id,
+                outcome="completed",
+                summary=summary if summary is not None else result,
+                metadata=metadata,
+            )
         # Carry the handoff summary in the event payload so gateway
         # notifiers and dashboard WS consumers can render it without a
         # second SQL round-trip. First line only, 400 char cap — the
@@ -1229,6 +1313,14 @@ def block_task(
             outcome="blocked", status="blocked",
             summary=reason,
         )
+        # Synthesize a run when blocking a never-claimed task so the
+        # reason is preserved in attempt history.
+        if run_id is None and reason:
+            run_id = _synthesize_ended_run(
+                conn, task_id,
+                outcome="blocked",
+                summary=reason,
+            )
         _append_event(conn, task_id, "blocked", {"reason": reason}, run_id=run_id)
         return True
 
@@ -2147,6 +2239,7 @@ def unseen_events_for_sub(
         out.append(Event(
             id=r["id"], task_id=r["task_id"], kind=r["kind"],
             payload=payload, created_at=r["created_at"],
+            run_id=(int(r["run_id"]) if "run_id" in r.keys() and r["run_id"] is not None else None),
         ))
         max_id = max(max_id, int(r["id"]))
     return max_id, out

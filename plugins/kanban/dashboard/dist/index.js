@@ -259,6 +259,11 @@
 
     const [selectedTaskId, setSelectedTaskId] = useState(null);
     const [selectedIds, setSelectedIds] = useState(() => new Set());
+    // Per-task event counter incremented whenever the WS stream reports
+    // a new event for that task id. TaskDrawer useEffect-depends on its
+    // own task's counter so it reloads itself on live events instead of
+    // showing stale data.
+    const [taskEventTick, setTaskEventTick] = useState({});
 
     const cursorRef = useRef(0);
     const reloadTimerRef = useRef(null);
@@ -339,6 +344,14 @@
             const msg = JSON.parse(ev.data);
             if (msg && Array.isArray(msg.events) && msg.events.length > 0) {
               cursorRef.current = msg.cursor || cursorRef.current;
+              // Stamp per-task signal so the TaskDrawer can reload itself.
+              setTaskEventTick(function (prev) {
+                const next = Object.assign({}, prev);
+                for (const e of msg.events) {
+                  if (e && e.task_id) next[e.task_id] = (next[e.task_id] || 0) + 1;
+                }
+                return next;
+              });
               scheduleReload();
             }
           } catch (_e) { /* ignore */ }
@@ -507,6 +520,7 @@
           onRefresh: loadBoard,
           renderMarkdown: renderMd,
           allTasks: board.columns.reduce(function (acc, c) { return acc.concat(c.tasks); }, []),
+          eventTick: taskEventTick[selectedTaskId] || 0,
         }) : null,
       ),
     );
@@ -981,7 +995,10 @@
         .finally(function () { setLoading(false); });
     }, [props.taskId]);
 
-    useEffect(function () { load(); }, [load]);
+    // Reload when the WS stream reports new events for this task id
+    // (completion, block, crash, etc. — anything that'd make the drawer
+    // show stale data if we only loaded on mount).
+    useEffect(function () { load(); }, [load, props.eventTick]);
     useEffect(function () {
       function onKey(e) { if (e.key === "Escape" && !editing) props.onClose(); }
       window.addEventListener("keydown", onKey);

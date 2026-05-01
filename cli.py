@@ -7320,12 +7320,16 @@ class HermesCLI:
                     self.conversation_history,
                     approx_tokens,
                     new_tokens,
+                    checkpoint_path=getattr(self.agent, "_last_compression_checkpoint_path", None),
+                    expose_checkpoint_path=True,
                 )
                 icon = "🗜️" if summary["noop"] else "✅"
                 print(f"  {icon} {summary['headline']}")
                 print(f"     {summary['token_line']}")
                 if summary["note"]:
                     print(f"     {summary['note']}")
+                if summary.get("checkpoint_path"):
+                    print(f"     Checkpoint: {summary['checkpoint_path']}")
 
             except Exception as e:
                 print(f"  ❌ Compression failed: {e}")

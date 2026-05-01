@@ -340,6 +340,9 @@ class ContextCompressor(ContextEngine):
         self._last_summary_error = None
         self._last_summary_dropped_count = 0
         self._last_summary_fallback_used = False
+        self.last_summary_text = None
+        self.last_summary_hash = None
+        self.last_summary_fallback_used = False
         self._last_aux_model_failure_error = None
         self._last_aux_model_failure_model = None
         self._last_compression_savings_pct = 100.0
@@ -450,6 +453,9 @@ class ContextCompressor(ContextEngine):
         # (gateway hygiene, /compress) can surface a visible warning.
         self._last_summary_dropped_count: int = 0
         self._last_summary_fallback_used: bool = False
+        self.last_summary_text: Optional[str] = None
+        self.last_summary_hash: Optional[str] = None
+        self.last_summary_fallback_used: bool = False
         # When a user-configured summary model fails and we recover by
         # retrying on the main model, record the failure so gateway /
         # CLI callers can still warn the user even though compression
@@ -874,7 +880,10 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 content = str(content) if content else ""
             # Redact the summary output as well — the summarizer LLM may
             # ignore prompt instructions and echo back secrets verbatim.
-            summary = redact_sensitive_text(content.strip())
+            summary = redact_sensitive_text(content.strip(), force=True)
+            self.last_summary_text = summary
+            self.last_summary_hash = hashlib.sha256(summary.encode("utf-8")).hexdigest()[:12]
+            self.last_summary_fallback_used = False
             # Store for iterative updates on next compaction
             self._previous_summary = summary
             self._summary_failure_cooldown_until = 0.0
@@ -1255,6 +1264,9 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         # after compress() returns to decide whether to surface a warning.
         self._last_summary_dropped_count = 0
         self._last_summary_fallback_used = False
+        self.last_summary_text = None
+        self.last_summary_hash = None
+        self.last_summary_fallback_used = False
         self._last_summary_error = None
         self._last_aux_model_failure_error = None
         self._last_aux_model_failure_model = None
@@ -1338,6 +1350,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             n_dropped = compress_end - compress_start
             self._last_summary_dropped_count = n_dropped
             self._last_summary_fallback_used = True
+            self.last_summary_fallback_used = True
             summary = (
                 f"{SUMMARY_PREFIX}\n"
                 f"Summary generation was unavailable. {n_dropped} message(s) were "
@@ -1345,6 +1358,9 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 f"messages contained earlier work in this session. Continue based on the "
                 f"recent messages below and the current state of any files or resources."
             )
+            fallback_body = summary[len(SUMMARY_PREFIX):].lstrip() if summary.startswith(SUMMARY_PREFIX) else summary
+            self.last_summary_text = fallback_body
+            self.last_summary_hash = hashlib.sha256(fallback_body.encode("utf-8")).hexdigest()[:12]
 
         _merge_summary_into_tail = False
         last_head_role = messages[compress_start - 1].get("role", "user") if compress_start > 0 else "user"

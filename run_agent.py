@@ -140,12 +140,15 @@ from agent.prompt_builder import (
 from agent.model_metadata import (
     fetch_model_metadata,
     estimate_tokens_rough, estimate_messages_tokens_rough, estimate_request_tokens_rough,
+    MINIMUM_CONTEXT_LENGTH,
     get_next_probe_tier, parse_context_limit_from_error,
     parse_available_output_tokens_from_error,
     save_context_length, is_local_endpoint,
     query_ollama_num_ctx,
 )
 from agent.context_compressor import ContextCompressor
+from agent.context_checkpoint import ContextCheckpointMetadata, render_context_checkpoint, write_context_checkpoint
+from agent.context_pressure import classify_context_pressure, resolve_context_pressure_bands
 from agent.subdirectory_hints import SubdirectoryHintTracker
 from agent.prompt_caching import apply_anthropic_cache_control
 from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, build_environment_hints, load_soul_md, TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE, OPENAI_MODEL_EXECUTION_GUIDANCE
@@ -1804,10 +1807,12 @@ class AIAgent:
         _compression_cfg = _agent_cfg.get("compression", {})
         if not isinstance(_compression_cfg, dict):
             _compression_cfg = {}
-        compression_threshold = float(_compression_cfg.get("threshold", 0.50))
+        compression_threshold = float(_compression_cfg.get("threshold", 0.735))
         compression_enabled = str(_compression_cfg.get("enabled", True)).lower() in ("true", "1", "yes")
         compression_target_ratio = float(_compression_cfg.get("target_ratio", 0.20))
         compression_protect_last = int(_compression_cfg.get("protect_last_n", 20))
+        compression_checkpoint_enabled = str(_compression_cfg.get("checkpoint_enabled", True)).lower() in ("true", "1", "yes")
+        compression_checkpoint_dir = str(_compression_cfg.get("checkpoint_dir", "context-checkpoints") or "context-checkpoints")
 
         # Read optional explicit context_length override for the auxiliary
         # compression model. Custom endpoints often cannot report this via
@@ -1993,10 +1998,32 @@ class AIAgent:
                 api_mode=self.api_mode,
             )
         self.compression_enabled = compression_enabled
+        self._compression_checkpoint_enabled = compression_checkpoint_enabled
+        self._compression_checkpoint_dir = compression_checkpoint_dir
+        self._last_compression_checkpoint_path = None
+        self._context_pressure_bands = resolve_context_pressure_bands(
+            context_length=getattr(self.context_compressor, "context_length", 0) or 1,
+            config=_compression_cfg,
+        )
+        self._last_context_pressure_band = "normal"
+        if hasattr(self.context_compressor, "threshold_tokens"):
+            self.context_compressor.threshold_tokens = max(
+                self._context_pressure_bands.normal_compaction_tokens,
+                MINIMUM_CONTEXT_LENGTH,
+            )
+        if hasattr(self.context_compressor, "threshold_percent") and self._context_pressure_bands.context_length:
+            self.context_compressor.threshold_percent = (
+                self.context_compressor.threshold_tokens
+                / self._context_pressure_bands.context_length
+            )
+        if hasattr(self.context_compressor, "summary_target_ratio") and hasattr(self.context_compressor, "tail_token_budget"):
+            self.context_compressor.tail_token_budget = int(
+                self.context_compressor.threshold_tokens
+                * self.context_compressor.summary_target_ratio
+            )
 
         # Reject models whose context window is below the minimum required
         # for reliable tool-calling workflows (64K tokens).
-        from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
         _ctx = getattr(self.context_compressor, "context_length", 0)
         if _ctx and _ctx < MINIMUM_CONTEXT_LENGTH:
             raise ValueError(
@@ -8988,6 +9015,7 @@ class AIAgent:
         Returns:
             (compressed_messages, new_system_prompt) tuple
         """
+        self._last_compression_checkpoint_path = None
         _pre_msg_count = len(messages)
         logger.info(
             "context compression started: session=%s messages=%d tokens=~%s model=%s focus=%r",
@@ -9002,6 +9030,48 @@ class AIAgent:
                 self._memory_manager.on_pre_compress(messages)
             except Exception:
                 pass
+
+        _checkpoint_metadata = None
+        _checkpoint_messages = list(messages)
+        _checkpoint_reason = "manual" if focus_topic else "automatic"
+        checkpoint_path = None
+        if getattr(self, "_compression_checkpoint_enabled", True):
+            try:
+                _bands = getattr(self, "_context_pressure_bands", None)
+                _pressure = (
+                    classify_context_pressure(approx_tokens or 0, _bands)
+                    if _bands is not None and approx_tokens is not None
+                    else "unknown"
+                )
+                _checkpoint_metadata = ContextCheckpointMetadata(
+                    session_id=self.session_id or "unknown",
+                    parent_session_id=getattr(self, "_parent_session_id", None),
+                    platform=self.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
+                    model=self.model,
+                    provider=self.provider or "unknown",
+                    context_length=getattr(self.context_compressor, "context_length", 0),
+                    estimated_tokens_before=approx_tokens,
+                    pressure_band=str(_pressure),
+                    compression_reason=_checkpoint_reason,
+                    created_at_iso=datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+                )
+                _checkpoint_content = render_context_checkpoint(
+                    _checkpoint_messages,
+                    _checkpoint_metadata,
+                )
+                checkpoint_path = write_context_checkpoint(
+                    hermes_home=get_hermes_home(),
+                    checkpoint_dir=getattr(self, "_compression_checkpoint_dir", "context-checkpoints"),
+                    session_id=self.session_id or "unknown",
+                    reason=f"{_checkpoint_reason}_compaction",
+                    content=_checkpoint_content,
+                )
+                self._last_compression_checkpoint_path = str(checkpoint_path)
+                _test_hook = getattr(self, "_on_compression_checkpoint_written_for_test", None)
+                if callable(_test_hook):
+                    _test_hook(str(checkpoint_path))
+            except Exception as _checkpoint_err:
+                logger.warning("Context checkpoint write failed before compression: %s", _checkpoint_err)
 
         try:
             compressed = self.context_compressor.compress(messages, current_tokens=approx_tokens, focus_topic=focus_topic)
@@ -9132,6 +9202,20 @@ class AIAgent:
         )
         self.context_compressor.last_prompt_tokens = _compressed_est
         self.context_compressor.last_completion_tokens = 0
+
+        if checkpoint_path is not None and _checkpoint_metadata is not None:
+            try:
+                _summary_text = getattr(self.context_compressor, "last_summary_text", None)
+                _checkpoint_content = render_context_checkpoint(
+                    _checkpoint_messages,
+                    _checkpoint_metadata,
+                    summary_text=_summary_text,
+                    new_session_id=self.session_id or None,
+                    estimated_tokens_after=_compressed_est,
+                )
+                checkpoint_path.write_text(_checkpoint_content, encoding="utf-8")
+            except Exception as _checkpoint_err:
+                logger.warning("Context checkpoint enrichment failed after compression: %s", _checkpoint_err)
 
         # Clear the file-read dedup cache.  After compression the original
         # read content is summarised away — if the model re-reads the same
@@ -10556,6 +10640,28 @@ class AIAgent:
                 system_prompt=active_system_prompt or "",
                 tools=self.tools or None,
             )
+
+            _preflight_pressure = classify_context_pressure(
+                _preflight_tokens,
+                self._context_pressure_bands,
+            ) if getattr(self, "_context_pressure_bands", None) is not None else "normal"
+            if (
+                _preflight_pressure == "soft"
+                and getattr(self, "_last_context_pressure_band", "normal") != "soft"
+            ):
+                logger.info(
+                    "Context soft warning: ~%s tokens >= %s soft threshold (model %s, ctx %s)",
+                    f"{_preflight_tokens:,}",
+                    f"{self._context_pressure_bands.soft_warning_tokens:,}",
+                    self.model,
+                    f"{self.context_compressor.context_length:,}",
+                )
+                if not self.quiet_mode:
+                    self._safe_print(
+                        f"⚠️ Context pressure: ~{_preflight_tokens:,} tokens "
+                        f">= {self._context_pressure_bands.soft_warning_tokens:,} soft threshold"
+                    )
+            self._last_context_pressure_band = _preflight_pressure
 
             if _preflight_tokens >= self.context_compressor.threshold_tokens:
                 logger.info(

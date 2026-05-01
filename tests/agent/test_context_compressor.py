@@ -172,6 +172,41 @@ class TestNonStringContent:
         assert summary is not None
         assert summary == SUMMARY_PREFIX
 
+    def test_summary_metadata_is_exposed_after_generation(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "## Active Task\nFinish checkpoint integration."
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+
+        messages = [
+            {"role": "user", "content": "do something"},
+            {"role": "assistant", "content": "ok"},
+        ]
+
+        with patch("agent.context_compressor.call_llm", return_value=mock_response):
+            c._generate_summary(messages)
+
+        assert c.last_summary_text == "## Active Task\nFinish checkpoint integration."
+        assert c.last_summary_hash is not None
+        assert len(c.last_summary_hash) == 12
+        assert c.last_summary_fallback_used is False
+
+    def test_summary_metadata_resets_on_session_reset(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+
+        c.last_summary_text = "old"
+        c.last_summary_hash = "abcdef123456"
+        c.last_summary_fallback_used = True
+
+        c.on_session_reset()
+
+        assert c.last_summary_text is None
+        assert c.last_summary_hash is None
+        assert c.last_summary_fallback_used is False
+
     def test_summary_call_does_not_force_temperature(self):
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]

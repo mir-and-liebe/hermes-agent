@@ -1,5 +1,6 @@
 import json
 import subprocess
+import sys
 from argparse import Namespace
 from pathlib import Path
 
@@ -92,8 +93,8 @@ def test_detect_changed_file_overlaps_reports_shared_files():
 
 def test_parallel_command_help_available():
     result = subprocess.run(
-        ["python", "-m", "hermes_cli.main", "parallel", "--help"],
-        cwd="/Users/liebe/.hermes/hermes-agent",
+        [sys.executable, "-m", "hermes_cli.main", "parallel", "--help"],
+        cwd=Path(__file__).resolve().parents[2],
         capture_output=True,
         text=True,
         timeout=15,

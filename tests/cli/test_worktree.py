@@ -125,6 +125,24 @@ def _cleanup_worktree(info):
 # Tests
 # ---------------------------------------------------------------------------
 
+
+def test_real_worktree_module_creates_info_dataclass(git_repo):
+    from hermes_cli.worktree import (
+        WorktreeInfo,
+        cleanup_worktree,
+        setup_worktree,
+    )
+
+    info = setup_worktree(git_repo, prefix="hermes-test", branch_prefix="hermes-test")
+
+    assert isinstance(info, WorktreeInfo)
+    assert Path(info.path).exists()
+    assert info.branch.startswith("hermes-test/hermes-test-")
+    assert Path(info.repo_root).resolve() == git_repo.resolve()
+
+    assert cleanup_worktree(info) is True
+
+
 class TestGitRepoDetection:
     """Test git repo root detection."""
 

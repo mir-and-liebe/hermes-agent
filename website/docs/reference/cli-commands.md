@@ -37,6 +37,7 @@ hermes [global-options] <command> [subcommand/options]
 | Command | Purpose |
 |---------|---------|
 | `hermes chat` | Interactive or one-shot chat with the agent. |
+| `hermes parallel` | Launch coordinated child Hermes sessions with shared mission context and isolated git worktrees. |
 | `hermes model` | Interactively choose the default provider and model. |
 | `hermes fallback` | Manage fallback providers tried when the primary model errors. |
 | `hermes gateway` | Run or manage the messaging gateway service. |
@@ -142,6 +143,39 @@ HERMES_INFERENCE_MODEL=anthropic/claude-sonnet-4.6 hermes -z "…"
 ```
 
 Same agent, same tools, same skills — just strips every interactive / cosmetic layer. If you need tool output in the transcript too, use `hermes chat -q` instead; `-z` is explicitly for "I only want the final answer".
+
+## `hermes parallel`
+
+Launch two or more Hermes child sessions with a shared mission brief and isolated git worktrees.
+Each child runs as `hermes chat -q --source parallel`, writes a per-role log under the active Hermes home, and the parent command records a mission manifest plus changed-file overlap summary.
+
+```bash
+hermes parallel run \
+  --name auth-fix \
+  --agent impl::"Implement the fix using TDD" \
+  --agent review::"Review the diff and run targeted tests" \
+  --verify "python -m pytest tests/auth -q"
+```
+
+Useful options:
+
+| Option | Description |
+|--------|-------------|
+| `--name <name>` | Human-readable mission name. |
+| `--goal <goal>` | Shared goal injected into every child prompt. |
+| `--agent role::task` | Role-scoped child task. Repeat at least twice. |
+| `--verify <command>` | Final shell verification command run by the parent after children exit. |
+| `--repo <path>` | Repo root or subdirectory. Defaults to the current directory. |
+| `--no-worktrees` | Run without creating isolated git worktrees. |
+| `--model`, `--provider`, `--toolsets`, `--skills` | Child-session routing and context overrides. |
+
+Inspect a saved mission:
+
+```bash
+hermes parallel status <mission_id>
+```
+
+Mission files are saved under `parallel/<mission_id>/` in the active Hermes home.
 
 ## `hermes model`
 

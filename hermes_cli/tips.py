@@ -65,6 +65,7 @@ TIPS = [
     # --- CLI Flags ---
     "hermes -c resumes your most recent CLI session. hermes -c \"project name\" resumes by title.",
     "hermes -w creates an isolated git worktree — perfect for parallel agent workflows.",
+    "hermes parallel run --agent impl::\"Fix bug\" --agent review::\"Review and test\" launches coordinated isolated agent worktrees.",
     "hermes -w -q \"Fix issue #42\" combines worktree isolation with a one-shot query.",
     "hermes chat -t web,terminal enables only specific toolsets for a focused session.",
     "hermes chat -s github-pr-workflow preloads a skill at launch.",

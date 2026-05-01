@@ -8137,6 +8137,56 @@ def main():
     chat_parser.set_defaults(func=cmd_chat)
 
     # =========================================================================
+    # parallel command
+    # =========================================================================
+    parallel_parser = subparsers.add_parser(
+        "parallel",
+        help="Run multiple Hermes agent sessions with shared mission coordination",
+        description="Coordinate two or more Hermes child sessions in isolated git worktrees",
+    )
+    parallel_subparsers = parallel_parser.add_subparsers(dest="parallel_action")
+
+    parallel_run = parallel_subparsers.add_parser(
+        "run",
+        help="Launch a coordinated parallel mission",
+    )
+    parallel_run.add_argument("--name", default="parallel-mission", help="Mission name")
+    parallel_run.add_argument("--goal", default=None, help="Shared goal injected into every child prompt")
+    parallel_run.add_argument(
+        "--agent",
+        action="append",
+        required=True,
+        help="Agent role and task as role::task. Repeat at least twice.",
+    )
+    parallel_run.add_argument("--verify", default=None, help="Final verification shell command")
+    parallel_run.add_argument("--repo", default=None, help="Repo root or subdirectory. Defaults to cwd.")
+    parallel_run.add_argument("--no-worktrees", action="store_true", help="Run without creating isolated git worktrees")
+    parallel_run.add_argument("--model", default=None, help="Model for child Hermes sessions")
+    parallel_run.add_argument("--provider", default=None, help="Provider for child Hermes sessions")
+    parallel_run.add_argument("--toolsets", default=None, help="Comma-separated toolsets for child sessions")
+    parallel_run.add_argument(
+        "--skills",
+        action="append",
+        default=[],
+        help="Skill to preload in child sessions. Repeat or comma-separate.",
+    )
+
+    parallel_status = parallel_subparsers.add_parser(
+        "status",
+        help="Show a saved parallel mission manifest and summary",
+    )
+    parallel_status.add_argument("mission_id", help="Mission id from parallel run")
+
+    def cmd_parallel(args):
+        from hermes_cli.parallel import parallel_command
+
+        code = parallel_command(args)
+        if code is not None:
+            sys.exit(code)
+
+    parallel_parser.set_defaults(func=cmd_parallel)
+
+    # =========================================================================
     # model command
     # =========================================================================
     model_parser = subparsers.add_parser(
@@ -10337,6 +10387,7 @@ Examples:
         "cron":    ("cron_command",    {"run", "tick"}),
         "gateway": ("gateway_command", {"run"}),
         "mcp":     ("mcp_action",      {"serve"}),
+        "parallel": ("parallel_action", {"run"}),
     }
     _sub_attr, _sub_set = _AGENT_SUBCOMMANDS.get(args.command, (None, None))
     if (

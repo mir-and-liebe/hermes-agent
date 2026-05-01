@@ -31,27 +31,27 @@ The valuable implementation is not â€œadd a good summary template from scratch.â
 
 Relevant files inspected:
 
-- `/Users/liebe/.hermes/hermes-agent/agent/context_compressor.py`
+- `<repo>/agent/context_compressor.py`
   - Existing `ContextCompressor` has structured sections: Active Task, Goal, Constraints & Preferences, Completed Actions, Active State, In Progress, Blocked, Key Decisions, Resolved Questions, Pending User Asks, Relevant Files, Remaining Work, Critical Context.
   - Existing default `threshold_percent` constructor value is `0.50`.
   - Existing compression is iterative via `_previous_summary`.
 
-- `/Users/liebe/.hermes/hermes-agent/run_agent.py`
+- `<repo>/run_agent.py`
   - Reads `compression.threshold` from config at lines around 1804-1810, defaulting to `0.50`.
   - Initializes `ContextCompressor` around lines 1981-1994.
   - `_compress_context()` starts around line 8980 and is the correct integration point for checkpoint persistence.
   - `_compress_context()` already calls memory pre-compress hooks and rotates the session row after compression.
 
-- `/Users/liebe/.hermes/hermes-agent/agent/context_engine.py`
+- `<repo>/agent/context_engine.py`
   - Context engine interface defaults to `threshold_percent = 0.75`, but built-in construction currently overrides to config default `0.50`.
 
 - Existing tests:
-  - `/Users/liebe/.hermes/hermes-agent/tests/agent/test_context_compressor.py`
-  - `/Users/liebe/.hermes/hermes-agent/tests/run_agent/test_compression_persistence.py`
-  - `/Users/liebe/.hermes/hermes-agent/tests/run_agent/test_compression_boundary.py`
-  - `/Users/liebe/.hermes/hermes-agent/tests/run_agent/test_compression_feasibility.py`
-  - `/Users/liebe/.hermes/hermes-agent/tests/cli/test_manual_compress.py`
-  - `/Users/liebe/.hermes/hermes-agent/tests/gateway/test_compress_command.py`
+  - `<repo>/tests/agent/test_context_compressor.py`
+  - `<repo>/tests/run_agent/test_compression_persistence.py`
+  - `<repo>/tests/run_agent/test_compression_boundary.py`
+  - `<repo>/tests/run_agent/test_compression_feasibility.py`
+  - `<repo>/tests/cli/test_manual_compress.py`
+  - `<repo>/tests/gateway/test_compress_command.py`
 
 ## Target behavior
 
@@ -98,35 +98,35 @@ Rules:
 
 ## Files to change
 
-- Create: `/Users/liebe/.hermes/hermes-agent/agent/context_pressure.py`
+- Create: `<repo>/agent/context_pressure.py`
   - Pure pressure-band dataclass and resolver.
 
-- Create: `/Users/liebe/.hermes/hermes-agent/agent/context_checkpoint.py`
+- Create: `<repo>/agent/context_checkpoint.py`
   - Pure checkpoint rendering and safe file persistence.
 
-- Modify: `/Users/liebe/.hermes/hermes-agent/run_agent.py`
+- Modify: `<repo>/run_agent.py`
   - Parse new compression pressure config.
   - Initialize compressor with resolved normal threshold.
   - Emit soft/emergency warnings.
   - Persist checkpoint before calling `context_compressor.compress()`.
   - Enrich checkpoint after compression with new session id and summary metadata.
 
-- Modify: `/Users/liebe/.hermes/hermes-agent/agent/context_compressor.py`
+- Modify: `<repo>/agent/context_compressor.py`
   - Expose the last generated summary/checkpoint body via a read-only field or getter, without changing the summary format.
   - Optional: add `compression_count`, `last_summary_hash`, and `last_summary_token_estimate` metadata.
 
-- Modify: `/Users/liebe/.hermes/hermes-agent/agent/manual_compression_feedback.py`
-  - Include checkpoint path in manual `/compress` feedback when available.
+- Modify: `<repo>/agent/manual_compression_feedback.py`
+  - Include checkpoint-saved metadata in manual `/compress` feedback; expose absolute paths only when explicitly requested by the local CLI.
 
-- Modify: `/Users/liebe/.hermes/hermes-agent/tui_gateway/server.py`
-  - Return checkpoint path in manual compression RPC response if `_compress_context()` exposes it.
+- Modify: `<repo>/tui_gateway/server.py`
+  - Return checkpoint-saved metadata in manual compression RPC response without exposing host-local absolute paths.
 
-- Modify: `/Users/liebe/.hermes/hermes-agent/gateway/run.py`
-  - Include checkpoint path in `/compress` command replies and hygiene compression logs.
+- Modify: `<repo>/gateway/run.py`
+  - Include checkpoint-saved status in `/compress` command replies and hygiene compression logs without exposing host-local absolute paths.
 
-- Create: `/Users/liebe/.hermes/hermes-agent/tests/agent/test_context_pressure.py`
-- Create: `/Users/liebe/.hermes/hermes-agent/tests/agent/test_context_checkpoint.py`
-- Create: `/Users/liebe/.hermes/hermes-agent/tests/run_agent/test_compression_checkpoints.py`
+- Create: `<repo>/tests/agent/test_context_pressure.py`
+- Create: `<repo>/tests/agent/test_context_checkpoint.py`
+- Create: `<repo>/tests/run_agent/test_compression_checkpoints.py`
 - Modify existing compression tests only where required by changed default threshold.
 
 ## Checkpoint artifact format
@@ -240,7 +240,7 @@ def test_pressure_bands_are_clamped_in_order():
 Run:
 
 ```bash
-cd /Users/liebe/.hermes/hermes-agent
+cd <repo>
 source venv/bin/activate
 pytest tests/agent/test_context_pressure.py -q
 ```
@@ -514,7 +514,7 @@ This complements existing boundary tests and proves checkpoint content still has
 - [ ] Step 1: Search docs for `compression.threshold`.
 
 ```bash
-cd /Users/liebe/.hermes/hermes-agent
+cd <repo>
 rg "compression:|compression.threshold|threshold" website docs hermes_cli agent tests -g'*.md' -g'*.py' -g'*.yaml'
 ```
 
@@ -527,7 +527,7 @@ rg "compression:|compression.threshold|threshold" website docs hermes_cli agent 
 Run targeted first:
 
 ```bash
-cd /Users/liebe/.hermes/hermes-agent
+cd <repo>
 source venv/bin/activate
 pytest tests/agent/test_context_pressure.py tests/agent/test_context_checkpoint.py tests/run_agent/test_compression_checkpoints.py -q
 pytest tests/agent/test_context_compressor.py tests/run_agent/test_compression_persistence.py tests/run_agent/test_compression_boundary.py -q

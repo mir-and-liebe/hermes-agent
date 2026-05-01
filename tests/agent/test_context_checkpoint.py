@@ -126,7 +126,7 @@ def test_write_context_checkpoint_creates_session_scoped_file(tmp_path: Path) ->
 
 
 def test_write_context_checkpoint_rejects_absolute_or_parent_dirs(tmp_path: Path) -> None:
-    for unsafe_dir in ("/tmp/checkpoints", "../outside", "safe/../../outside"):
+    for unsafe_dir in ("/tmp/checkpoints", "../outside", "safe/../../outside", ".. ", " ..", "safe/.. /.. /outside"):
         try:
             write_context_checkpoint(
                 hermes_home=tmp_path,

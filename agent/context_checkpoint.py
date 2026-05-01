@@ -320,7 +320,14 @@ def _safe_checkpoint_dir(value: str) -> Path:
     raw = Path(value or "context-checkpoints")
     if raw.is_absolute() or ".." in raw.parts:
         raise ValueError("compression.checkpoint_dir must be a relative path under HERMES_HOME")
-    safe_parts = [_safe_path_part(part) for part in raw.parts if part not in ("", ".")]
+    safe_parts: list[str] = []
+    for part in raw.parts:
+        if part in ("", "."):
+            continue
+        safe_part = _safe_path_part(part)
+        if safe_part in (".", ".."):
+            raise ValueError("compression.checkpoint_dir must be a relative path under HERMES_HOME")
+        safe_parts.append(safe_part)
     return Path(*safe_parts) if safe_parts else Path("context-checkpoints")
 
 
@@ -336,7 +343,10 @@ def write_context_checkpoint(
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")
     session_part = _safe_path_part(session_id)
     reason_part = _safe_path_part(reason)
-    directory = hermes_home / _safe_checkpoint_dir(checkpoint_dir) / session_part
+    root = hermes_home.resolve()
+    directory = (root / _safe_checkpoint_dir(checkpoint_dir) / session_part).resolve()
+    if not directory.is_relative_to(root):
+        raise ValueError("compression.checkpoint_dir must stay under HERMES_HOME")
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / f"{timestamp}_{uuid.uuid4().hex[:8]}_{reason_part}.md"
     path.write_text(redact_sensitive_text(content, force=True), encoding="utf-8")

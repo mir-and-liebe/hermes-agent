@@ -2,6 +2,7 @@
 
 from unittest.mock import MagicMock, patch
 
+from agent.manual_compression_feedback import summarize_manual_compression
 from tests.cli.test_cli_init import _make_cli
 
 
@@ -22,6 +23,7 @@ def test_manual_compress_reports_noop_without_success_banner(capsys):
     shell.agent.compression_enabled = True
     shell.agent._cached_system_prompt = ""
     shell.agent.tools = None
+    shell.agent._last_compression_checkpoint_path = "/tmp/checkpoint.md"
     shell.agent.session_id = shell.session_id  # no-op compression: no split
     shell.agent._compress_context.return_value = (list(history), "")
 
@@ -36,6 +38,21 @@ def test_manual_compress_reports_noop_without_success_banner(capsys):
     assert "No changes from compression" in output
     assert "✅ Compressed" not in output
     assert "Approx request size: ~100 tokens (unchanged)" in output
+    assert "Checkpoint: /tmp/checkpoint.md" in output
+
+
+def test_manual_compression_feedback_masks_checkpoint_path_by_default():
+    summary = summarize_manual_compression([], [{"role": "user", "content": "x"}], 10, 5, checkpoint_path="/tmp/secret/session/file.md")
+
+    assert summary["checkpoint_saved"] is True
+    assert summary["checkpoint_name"] == "file.md"
+    assert summary["checkpoint_path"] is None
+
+
+def test_manual_compression_feedback_can_expose_checkpoint_path_for_local_cli():
+    summary = summarize_manual_compression([], [{"role": "user", "content": "x"}], 10, 5, checkpoint_path="/tmp/secret/session/file.md", expose_checkpoint_path=True)
+
+    assert summary["checkpoint_path"] == "/tmp/secret/session/file.md"
 
 
 def test_manual_compress_explains_when_token_estimate_rises(capsys):

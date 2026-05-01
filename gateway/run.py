@@ -8966,11 +8966,13 @@ class GatewayRunner:
                 new_tokens = estimate_request_tokens_rough(
                     compressed, system_prompt=_sys_prompt, tools=_tools
                 )
+                _checkpoint_path = getattr(tmp_agent, "_last_compression_checkpoint_path", None)
                 summary = summarize_manual_compression(
                     msgs,
                     compressed,
                     approx_tokens,
                     new_tokens,
+                    checkpoint_path=_checkpoint_path,
                 )
                 # Detect summary-generation failure so we can surface a
                 # visible warning to the user even on the manual /compress
@@ -8991,6 +8993,8 @@ class GatewayRunner:
             lines.append(summary["token_line"])
             if summary["note"]:
                 lines.append(summary["note"])
+            if summary.get("checkpoint_path"):
+                lines.append(f"Checkpoint: {summary['checkpoint_path']}")
             if _summary_failed:
                 lines.append(
                     f"⚠️ Summary generation failed ({_summary_err or 'unknown error'}). "

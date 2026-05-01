@@ -2372,7 +2372,11 @@ def _(rid, params: dict) -> dict:
             agent = session["agent"]
             _sync_session_key_after_compress(sid, session)
             summary = summarize_manual_compression(
-                before_messages, messages, before_tokens, after_tokens
+                before_messages,
+                messages,
+                before_tokens,
+                after_tokens,
+                checkpoint_path=getattr(agent, "_last_compression_checkpoint_path", None),
             )
             info = _session_info(agent)
             _emit("session.info", sid, info)

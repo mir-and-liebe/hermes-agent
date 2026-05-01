@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Sequence
 
 
@@ -10,6 +11,8 @@ def summarize_manual_compression(
     after_messages: Sequence[dict[str, Any]],
     before_tokens: int,
     after_tokens: int,
+    checkpoint_path: str | None = None,
+    expose_checkpoint_path: bool = False,
 ) -> dict[str, Any]:
     """Return consistent user-facing feedback for manual compression."""
     before_count = len(before_messages)
@@ -41,9 +44,14 @@ def summarize_manual_compression(
             "compression rewrites the transcript into denser summaries."
         )
 
+    checkpoint_name = Path(checkpoint_path).name if checkpoint_path else None
+
     return {
         "noop": noop,
         "headline": headline,
         "token_line": token_line,
         "note": note,
+        "checkpoint_saved": bool(checkpoint_path),
+        "checkpoint_name": checkpoint_name,
+        "checkpoint_path": checkpoint_path if expose_checkpoint_path else None,
     }

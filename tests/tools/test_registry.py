@@ -1,10 +1,12 @@
 """Tests for the central tool registry."""
 
 import json
+import logging
 import threading
 from pathlib import Path
 from unittest.mock import patch
 
+from agent.failure_policy import get_failure_counts, reset_failure_counts_for_tests
 from tools.registry import ToolRegistry, discover_builtin_tools
 
 
@@ -213,7 +215,9 @@ class TestToolsetAvailability:
 class TestCheckFnExceptionHandling:
     """Verify that a raising check_fn is caught rather than crashing."""
 
-    def test_is_toolset_available_catches_exception(self):
+    def test_is_toolset_available_catches_exception(self, caplog):
+        reset_failure_counts_for_tests()
+        caplog.set_level(logging.WARNING, logger="hermes.failure")
         reg = ToolRegistry()
         reg.register(
             name="t",
@@ -224,6 +228,9 @@ class TestCheckFnExceptionHandling:
         )
         # Should return False, not raise
         assert reg.is_toolset_available("broken") is False
+        assert "component=tools.registry" in caplog.text
+        assert "operation=toolset_check" in caplog.text
+        assert get_failure_counts()["tools.registry.toolset_check.degraded"] == 1
 
     def test_check_toolset_requirements_survives_raising_check(self):
         reg = ToolRegistry()
@@ -246,7 +253,9 @@ class TestCheckFnExceptionHandling:
         assert reqs["good"] is True
         assert reqs["bad"] is False
 
-    def test_get_definitions_skips_raising_check(self):
+    def test_get_definitions_skips_raising_check(self, caplog):
+        reset_failure_counts_for_tests()
+        caplog.set_level(logging.WARNING, logger="hermes.failure")
         reg = ToolRegistry()
         reg.register(
             name="ok_tool",
@@ -265,6 +274,9 @@ class TestCheckFnExceptionHandling:
         defs = reg.get_definitions({"ok_tool", "bad_tool"})
         assert len(defs) == 1
         assert defs[0]["function"]["name"] == "ok_tool"
+        assert "operation=check_fn" in caplog.text
+        assert "tool=bad_tool" in caplog.text
+        assert get_failure_counts()["tools.registry.check_fn.degraded"] == 1
 
     def test_check_tool_availability_survives_raising_check(self):
         reg = ToolRegistry()

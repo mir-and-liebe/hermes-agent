@@ -661,6 +661,15 @@ def _load_skin_from_yaml(path: Path) -> Optional[Dict[str, Any]]:
         if isinstance(data, dict) and "name" in data:
             return data
     except Exception as e:
+        from agent.failure_policy import degraded
+
+        degraded(
+            component="hermes_cli.skin_engine",
+            operation="load_skin_from_yaml",
+            exc=e,
+            user_visible_effect="user skin could not be loaded; default skin fallback may be used",
+            path=str(path),
+        )
         logger.debug("Failed to load skin from %s: %s", path, e)
     return None
 

@@ -94,11 +94,31 @@ ARGS=("$@")
 echo "▶ running pytest with $WORKERS workers, hermetic env, in $REPO_ROOT"
 echo "  (TZ=UTC LANG=C.UTF-8 PYTHONHASHSEED=0; all credential env vars unset)"
 
+SILENT_FAILURE_BASELINE="$REPO_ROOT/.silent-failures-baseline.json"
+if [ -f "$SILENT_FAILURE_BASELINE" ]; then
+  echo "▶ auditing silent-failure handlers against $SILENT_FAILURE_BASELINE"
+  "$PYTHON" "$REPO_ROOT/scripts/audit_silent_failures.py" \
+    "$REPO_ROOT/run_agent.py" \
+    "$REPO_ROOT/model_tools.py" \
+    "$REPO_ROOT/tools/registry.py" \
+    "$REPO_ROOT/cron" \
+    "$REPO_ROOT/gateway" \
+    "$REPO_ROOT/hermes_cli" \
+    "$REPO_ROOT/tui_gateway" \
+    --baseline "$SILENT_FAILURE_BASELINE"
+fi
+
 # -o "addopts=" clears pyproject.toml's `-n auto` so our -n wins.
-exec "$PYTHON" -m pytest \
-  -o "addopts=" \
-  -n "$WORKERS" \
-  --ignore=tests/integration \
-  --ignore=tests/e2e \
-  -m "not integration" \
-  "${ARGS[@]}"
+PYTEST_ARGS=(
+  -o "addopts="
+  -n "$WORKERS"
+  --ignore=tests/integration
+  --ignore=tests/e2e
+  -m "not integration"
+)
+
+if [ "$#" -gt 0 ]; then
+  PYTEST_ARGS+=("$@")
+fi
+
+exec "$PYTHON" -m pytest "${PYTEST_ARGS[@]}"

@@ -1,11 +1,13 @@
 """Tests for gateway/hooks.py — event hook system."""
 
 import asyncio
+import logging
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
+from agent.failure_policy import get_failure_counts, reset_failure_counts_for_tests
 from gateway.hooks import HookRegistry
 
 
@@ -188,7 +190,9 @@ class TestEmit:
         assert not reg._handlers.get("unknown:event")
 
     @pytest.mark.asyncio
-    async def test_handler_error_does_not_propagate(self, tmp_path):
+    async def test_handler_error_does_not_propagate(self, tmp_path, caplog):
+        reset_failure_counts_for_tests()
+        caplog.set_level(logging.WARNING, logger="hermes.failure")
         _create_hook(tmp_path, "bad-hook", '["agent:start"]',
                       "def handle(event_type, context):\n"
                       "    raise ValueError('boom')\n")
@@ -201,6 +205,9 @@ class TestEmit:
         # Should not raise even though handler throws
         result = await reg.emit("agent:start", {})
         assert result is None
+        assert "component=gateway.hooks" in caplog.text
+        assert "operation=emit" in caplog.text
+        assert get_failure_counts()["gateway.hooks.emit.degraded"] == 1
 
     @pytest.mark.asyncio
     async def test_emit_default_context(self, tmp_path):
@@ -267,7 +274,9 @@ class TestEmitCollect:
         assert results == [{"decision": "deny"}]
 
     @pytest.mark.asyncio
-    async def test_handler_exception_does_not_abort_chain(self):
+    async def test_handler_exception_does_not_abort_chain(self, caplog):
+        reset_failure_counts_for_tests()
+        caplog.set_level(logging.WARNING, logger="hermes.failure")
         reg = HookRegistry()
 
         def _raises(_e, _c):
@@ -282,6 +291,9 @@ class TestEmitCollect:
 
         # First handler's exception is swallowed; second handler's value still collected.
         assert results == [{"decision": "allow"}]
+        assert "component=gateway.hooks" in caplog.text
+        assert "operation=emit_collect" in caplog.text
+        assert get_failure_counts()["gateway.hooks.emit_collect.degraded"] == 1
 
     @pytest.mark.asyncio
     async def test_wildcard_match_also_collected(self):

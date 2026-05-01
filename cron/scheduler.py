@@ -203,8 +203,17 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
                         thread_id = parsed_thread_id
                 else:
                     chat_id = resolved
-        except Exception:
-            pass
+        except Exception as exc:
+            from agent.failure_policy import degraded
+
+            degraded(
+                component="cron.delivery",
+                operation="resolve_channel_name",
+                exc=exc,
+                user_visible_effect="cron delivery channel label could not be resolved; using raw target",
+                platform=platform_key,
+                job_id=job.get("id"),
+            )
 
         return {
             "platform": platform_name,
@@ -221,9 +230,29 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
         }
 
     if platform_name.lower() not in _KNOWN_DELIVERY_PLATFORMS:
+        from agent.failure_policy import degraded
+
+        degraded(
+            component="cron.delivery",
+            operation="resolve_delivery_target",
+            exc=None,
+            user_visible_effect="cron delivery target references an unknown platform",
+            platform=platform_name,
+            job_id=job.get("id"),
+        )
         return None
     chat_id = _get_home_target_chat_id(platform_name)
     if not chat_id:
+        from agent.failure_policy import degraded
+
+        degraded(
+            component="cron.delivery",
+            operation="resolve_delivery_target",
+            exc=None,
+            user_visible_effect="cron delivery platform has no configured home target",
+            platform=platform_name,
+            job_id=job.get("id"),
+        )
         return None
 
     return {
@@ -359,8 +388,16 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     try:
         user_cfg = load_config()
         wrap_response = user_cfg.get("cron", {}).get("wrap_response", True)
-    except Exception:
-        pass
+    except Exception as exc:
+        from agent.failure_policy import best_effort
+
+        best_effort(
+            component="cron.delivery",
+            operation="load_wrap_response_config",
+            exc=exc,
+            reason="cron response wrapping config is optional; using default wrapper",
+            job_id=job.get("id"),
+        )
 
     if wrap_response:
         task_name = job.get("name", job["id"])
@@ -607,8 +644,18 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
             from agent.redact import redact_sensitive_text
             stdout = redact_sensitive_text(stdout)
             stderr = redact_sensitive_text(stderr)
-        except Exception:
-            pass
+        except Exception as exc:
+            from agent.failure_policy import degraded
+
+            degraded(
+                component="cron.script",
+                operation="redact_script_output",
+                exc=exc,
+                user_visible_effect="cron script output redaction failed; output withheld",
+                script=str(path),
+            )
+            stdout = "[redaction failed; output withheld]" if stdout else ""
+            stderr = "[redaction failed; output withheld]" if stderr else ""
 
         if result.returncode != 0:
             parts = [f"Script exited with code {result.returncode}"]
@@ -937,8 +984,16 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             _net_cfg = _cfg.get("network", {})
             if isinstance(_net_cfg, dict) and _net_cfg.get("force_ipv4"):
                 apply_ipv4_preference(force=True)
-        except Exception:
-            pass
+        except Exception as exc:
+            from agent.failure_policy import degraded
+
+            degraded(
+                component="cron.network",
+                operation="apply_ipv4_preference",
+                exc=exc,
+                user_visible_effect="configured IPv4 preference could not be applied for this cron run",
+                job_id=job_id,
+            )
 
         # Reasoning config from config.yaml
         from hermes_constants import parse_reasoning_effort

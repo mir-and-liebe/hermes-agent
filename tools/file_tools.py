@@ -150,9 +150,13 @@ def _is_blocked_device(filepath: str) -> bool:
 # terminal tool's approval system.  These match prefixes after os.path.realpath.
 _SENSITIVE_PATH_PREFIXES = (
     "/etc/", "/boot/", "/usr/lib/systemd/",
-    "/private/etc/", "/private/var/",
+    "/private/etc/", "/private/var/db/",
 )
-_SENSITIVE_EXACT_PATHS = {"/var/run/docker.sock", "/run/docker.sock"}
+_SENSITIVE_EXACT_PATHS = {
+    "/var/run/docker.sock",
+    "/run/docker.sock",
+    "/private/var/run/docker.sock",
+}
 
 
 def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None:

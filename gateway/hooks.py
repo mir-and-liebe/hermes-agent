@@ -21,6 +21,7 @@ Errors in hooks are caught and logged but never block the main pipeline.
 
 import asyncio
 import importlib.util
+import logging
 import sys
 from typing import Any, Callable, Dict, List, Optional
 
@@ -30,6 +31,7 @@ from hermes_cli.config import get_hermes_home
 
 
 HOOKS_DIR = get_hermes_home() / "hooks"
+logger = logging.getLogger(__name__)
 
 
 class HookRegistry:
@@ -140,6 +142,15 @@ class HookRegistry:
                 print(f"[hooks] Loaded hook '{hook_name}' for events: {events}", flush=True)
 
             except Exception as e:
+                from agent.failure_policy import degraded
+
+                degraded(
+                    component="gateway.hooks",
+                    operation="discover_and_load",
+                    exc=e,
+                    user_visible_effect="gateway hook was skipped during discovery",
+                    hook_dir=hook_dir.name,
+                )
                 print(f"[hooks] Error loading hook {hook_dir.name}: {e}", flush=True)
 
     def _resolve_handlers(self, event_type: str) -> List[Callable]:
@@ -178,6 +189,16 @@ class HookRegistry:
                 if asyncio.iscoroutine(result):
                     await result
             except Exception as e:
+                from agent.failure_policy import degraded
+
+                degraded(
+                    component="gateway.hooks",
+                    operation="emit",
+                    exc=e,
+                    user_visible_effect="gateway event hook failed but event processing continued",
+                    event_type=event_type,
+                    handler=getattr(fn, "__name__", repr(fn)),
+                )
                 print(f"[hooks] Error in handler for '{event_type}': {e}", flush=True)
 
     async def emit_collect(
@@ -206,5 +227,15 @@ class HookRegistry:
                 if result is not None:
                     results.append(result)
             except Exception as e:
+                from agent.failure_policy import degraded
+
+                degraded(
+                    component="gateway.hooks",
+                    operation="emit_collect",
+                    exc=e,
+                    user_visible_effect="gateway decision hook failed but remaining handlers continued",
+                    event_type=event_type,
+                    handler=getattr(fn, "__name__", repr(fn)),
+                )
                 print(f"[hooks] Error in handler for '{event_type}': {e}", flush=True)
         return results

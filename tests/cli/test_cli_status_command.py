@@ -86,6 +86,21 @@ def test_show_session_status_prints_gateway_style_summary():
     assert kwargs.get("markup") is False
 
 
+def test_show_session_status_prints_recent_failure_events():
+    cli_obj = _make_cli()
+
+    with patch("cli.display_hermes_home", return_value="~/.hermes"), \
+         patch("agent.failure_policy.get_recent_failure_lines", return_value=[
+             "failure_event severity=degraded component=gateway.hooks operation=emit message=hook failed"
+         ]):
+        cli_obj._show_session_status()
+
+    printed = "\n".join(str(call.args[0]) for call in cli_obj.console.print.call_args_list)
+    assert "Recent Failures:" in printed
+    assert "gateway.hooks" in printed
+    assert "operation=emit" in printed
+
+
 def test_profile_command_reports_custom_root_profile(monkeypatch, tmp_path, capsys):
     """Profile detection works for custom-root deployments (not under ~/.hermes)."""
     cli_obj = _make_cli()

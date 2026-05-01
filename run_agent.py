@@ -4678,8 +4678,16 @@ class AIAgent:
                 original_user_message,
                 session_id=self.session_id or "",
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            from agent.failure_policy import degraded
+
+            degraded(
+                component="agent.memory",
+                operation="sync_external_memory_provider",
+                exc=exc,
+                user_visible_effect="external memory provider sync failed for this turn",
+                session_id=self.session_id,
+            )
 
     def release_clients(self) -> None:
         """Release LLM client resources WITHOUT tearing down session tool state.
@@ -10496,8 +10504,17 @@ class AIAgent:
                         "issue — cleaned up automatically. Proceeding with fresh "
                         "connection."
                     )
-            except Exception:
-                pass
+            except Exception as exc:
+                from agent.failure_policy import best_effort
+
+                best_effort(
+                    component="agent.loop",
+                    operation="cleanup_dead_connections",
+                    exc=exc,
+                    reason="pre-turn connection cleanup is advisory",
+                    session_id=self.session_id,
+                    task_id=effective_task_id,
+                )
         # Replay compression warning through status_callback for gateway
         # platforms (the callback was not wired during __init__).
         if self._compression_warning:
@@ -10587,8 +10604,16 @@ class AIAgent:
                     session_row = self._session_db.get_session(self.session_id)
                     if session_row:
                         stored_prompt = session_row.get("system_prompt") or None
-                except Exception:
-                    pass  # Fall through to build fresh
+                except Exception as exc:
+                    from agent.failure_policy import degraded
+
+                    degraded(
+                        component="agent.session",
+                        operation="load_cached_system_prompt",
+                        exc=exc,
+                        user_visible_effect="session prompt cache snapshot unavailable; rebuilding prompt",
+                        session_id=self.session_id,
+                    )
 
             if stored_prompt:
                 # Continuing session — reuse the exact system prompt from
@@ -11781,8 +11806,16 @@ class AIAgent:
                                     model=self.model,
                                     api_call_count=1,
                                 )
-                            except Exception:
-                                pass  # never block the agent loop
+                            except Exception as exc:
+                                from agent.failure_policy import degraded
+
+                                degraded(
+                                    component="agent.accounting",
+                                    operation="persist_token_counts",
+                                    exc=exc,
+                                    user_visible_effect="usage accounting may be stale for this turn",
+                                    session_id=self.session_id,
+                                )
                         
                         if self.verbose_logging:
                             logging.debug(f"Token usage: prompt={usage_dict['prompt_tokens']:,}, completion={usage_dict['completion_tokens']:,}, total={usage_dict['total_tokens']:,}")
@@ -11817,8 +11850,16 @@ class AIAgent:
                         try:
                             from agent.nous_rate_guard import clear_nous_rate_limit
                             clear_nous_rate_limit()
-                        except Exception:
-                            pass
+                        except Exception as exc:
+                            from agent.failure_policy import best_effort
+
+                            best_effort(
+                                component="agent.rate_limit",
+                                operation="clear_nous_rate_limit",
+                                exc=exc,
+                                reason="rate-limit guard cleanup must not block a successful response",
+                                session_id=self.session_id,
+                            )
                     self._touch_activity(f"API call #{api_call_count} completed")
                     break  # Success, exit retry loop
 
@@ -12947,8 +12988,17 @@ class AIAgent:
                         assistant_content_chars=len(_assistant_text),
                         assistant_tool_call_count=len(_assistant_tool_calls),
                     )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    from agent.failure_policy import best_effort
+
+                    best_effort(
+                        component="agent.hooks",
+                        operation="post_api_request",
+                        exc=exc,
+                        reason="plugin hooks must not block a model response",
+                        session_id=self.session_id,
+                        task_id=effective_task_id,
+                    )
 
                 # Handle assistant response
                 if assistant_message.content and not self.quiet_mode:
@@ -12971,13 +13021,31 @@ class AIAgent:
                     if first_line and getattr(self, '_delegate_depth', 0) > 0:
                         try:
                             self.tool_progress_callback("_thinking", first_line)
-                        except Exception:
-                            pass
+                        except Exception as exc:
+                            from agent.failure_policy import best_effort
+
+                            best_effort(
+                                component="agent.progress",
+                                operation="tool_progress_callback_thinking",
+                                exc=exc,
+                                reason="progress callbacks must not block model responses",
+                                session_id=self.session_id,
+                                task_id=effective_task_id,
+                            )
                     elif _think_text:
                         try:
                             self.tool_progress_callback("reasoning.available", "_thinking", _think_text[:500], None)
-                        except Exception:
-                            pass
+                        except Exception as exc:
+                            from agent.failure_policy import best_effort
+
+                            best_effort(
+                                component="agent.progress",
+                                operation="tool_progress_callback_reasoning",
+                                exc=exc,
+                                reason="progress callbacks must not block model responses",
+                                session_id=self.session_id,
+                                task_id=effective_task_id,
+                            )
                 
                 # Check for incomplete <REASONING_SCRATCHPAD> (opened but never closed)
                 # This means the model ran out of output tokens mid-reasoning — retry up to 2 times
@@ -13909,8 +13977,16 @@ class AIAgent:
                     review_memory=_should_review_memory,
                     review_skills=_should_review_skills,
                 )
-            except Exception:
-                pass  # Background review is best-effort
+            except Exception as exc:
+                from agent.failure_policy import best_effort
+
+                best_effort(
+                    component="agent.review",
+                    operation="spawn_background_review",
+                    exc=exc,
+                    reason="background memory/skill review must not block response delivery",
+                    session_id=self.session_id,
+                )
 
         # Note: Memory provider on_session_end() + shutdown_all() are NOT
         # called here — run_conversation() is called once per user message in

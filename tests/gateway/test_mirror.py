@@ -1,9 +1,11 @@
 """Tests for gateway/mirror.py — session mirroring."""
 
 import json
+import logging
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
+from agent.failure_policy import get_failure_counts, reset_failure_counts_for_tests
 import gateway.mirror as mirror_mod
 from gateway.mirror import (
     mirror_to_session,
@@ -137,6 +139,22 @@ class TestFindSessionId:
 
         assert result is None
 
+    def test_invalid_sessions_file_is_reported(self, tmp_path, caplog):
+        reset_failure_counts_for_tests()
+        caplog.set_level(logging.WARNING, logger="hermes.failure")
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir(parents=True, exist_ok=True)
+        index_file = sessions_dir / "sessions.json"
+        index_file.write_text("{bad json")
+
+        with patch.object(mirror_mod, "_SESSIONS_INDEX", index_file):
+            result = _find_session_id("telegram", "12345")
+
+        assert result is None
+        assert "component=gateway.mirror" in caplog.text
+        assert "operation=find_session_id" in caplog.text
+        assert get_failure_counts()["gateway.mirror.find_session_id.degraded"] == 1
+
     def test_platform_case_insensitive(self, tmp_path):
         sessions_dir, index_file = _setup_sessions(tmp_path, {
             "s1": {
@@ -267,11 +285,16 @@ class TestMirrorToSession:
 
         assert result is False
 
-    def test_error_returns_false(self, tmp_path):
+    def test_error_returns_false(self, tmp_path, caplog):
+        reset_failure_counts_for_tests()
+        caplog.set_level(logging.WARNING, logger="hermes.failure")
         with patch("gateway.mirror._find_session_id", side_effect=Exception("boom")):
             result = mirror_to_session("telegram", "123", "msg")
 
         assert result is False
+        assert "component=gateway.mirror" in caplog.text
+        assert "operation=mirror_to_session" in caplog.text
+        assert get_failure_counts()["gateway.mirror.mirror_to_session.degraded"] == 1
 
 
 class TestAppendToSqlite:

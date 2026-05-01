@@ -1,10 +1,13 @@
 """Tests for hermes_cli.skin_engine — the data-driven skin/theme system."""
 
 import json
+import logging
 import os
 import pytest
 from pathlib import Path
 from unittest.mock import patch
+
+from agent.failure_policy import get_failure_counts, reset_failure_counts_for_tests
 
 
 @pytest.fixture(autouse=True)
@@ -215,6 +218,23 @@ class TestUserSkins:
         assert "pirate" in names
         pirate = [s for s in skins if s["name"] == "pirate"][0]
         assert pirate["source"] == "user"
+
+    def test_invalid_user_skin_reports_degraded_fallback(self, tmp_path, monkeypatch, caplog):
+        reset_failure_counts_for_tests()
+        caplog.set_level(logging.WARNING, logger="hermes.failure")
+        from hermes_cli.skin_engine import load_skin
+
+        skins_dir = tmp_path / "skins"
+        skins_dir.mkdir()
+        (skins_dir / "broken.yaml").write_text("name: [bad")
+        monkeypatch.setattr("hermes_cli.skin_engine._skins_dir", lambda: skins_dir)
+
+        skin = load_skin("broken")
+
+        assert skin.name == "default"
+        assert "component=hermes_cli.skin_engine" in caplog.text
+        assert "operation=load_skin_from_yaml" in caplog.text
+        assert get_failure_counts()["hermes_cli.skin_engine.load_skin_from_yaml.degraded"] == 1
 
 
 class TestDisplayIntegration:

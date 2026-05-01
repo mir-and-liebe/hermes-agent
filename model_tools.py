@@ -177,6 +177,18 @@ def _run_async(coro):
 # Tool Discovery  (importing each module triggers its registry.register calls)
 # =============================================================================
 
+def _report_discovery_failure(subsystem: str, exc: Exception) -> None:
+    from agent.failure_policy import degraded
+
+    degraded(
+        component="model_tools",
+        operation=f"{subsystem}_discovery",
+        exc=exc,
+        user_visible_effect="tool subsystem discovery failed; related tools may be unavailable",
+        subsystem=subsystem,
+    )
+
+
 discover_builtin_tools()
 
 # MCP tool discovery (external MCP servers from config) used to run here as
@@ -197,8 +209,7 @@ try:
     from hermes_cli.plugins import discover_plugins
     discover_plugins()
 except Exception as e:
-    logger.debug("Plugin discovery failed: %s", e)
-
+    _report_discovery_failure("plugin", e)
 
 # =============================================================================
 # Backward-compat constants  (built once after discovery)

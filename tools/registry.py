@@ -115,8 +115,13 @@ _check_fn_cache: Dict[Callable, tuple[float, bool]] = {}
 _check_fn_cache_lock = threading.Lock()
 
 
-def _check_fn_cached(fn: Callable) -> bool:
-    """Return bool(fn()), TTL-cached across calls. Swallows exceptions as False."""
+def _check_fn_cached(
+    fn: Callable,
+    *,
+    tool: str | None = None,
+    toolset: str | None = None,
+) -> bool:
+    """Return bool(fn()), TTL-cached across calls; report failures as unavailable."""
     now = time.monotonic()
     with _check_fn_cache_lock:
         cached = _check_fn_cache.get(fn)
@@ -126,8 +131,18 @@ def _check_fn_cached(fn: Callable) -> bool:
                 return value
     try:
         value = bool(fn())
-    except Exception:
+    except Exception as exc:
+        from agent.failure_policy import degraded
+
         value = False
+        degraded(
+            component="tools.registry",
+            operation="check_fn",
+            exc=exc,
+            user_visible_effect="tool unavailable because its requirement check failed",
+            tool=tool,
+            toolset=toolset,
+        )
     with _check_fn_cache_lock:
         _check_fn_cache[fn] = (now, value)
     return value
@@ -177,8 +192,16 @@ class ToolRegistry:
             return True
         try:
             return bool(check())
-        except Exception:
-            logger.debug("Toolset %s check raised; marking unavailable", toolset)
+        except Exception as exc:
+            from agent.failure_policy import degraded
+
+            degraded(
+                component="tools.registry",
+                operation="toolset_check",
+                exc=exc,
+                user_visible_effect="toolset unavailable because its requirement check failed",
+                toolset=toolset,
+            )
             return False
 
     def get_entry(self, name: str) -> Optional[ToolEntry]:
@@ -330,7 +353,11 @@ class ToolRegistry:
                 continue
             if entry.check_fn:
                 if entry.check_fn not in check_results:
-                    check_results[entry.check_fn] = _check_fn_cached(entry.check_fn)
+                    check_results[entry.check_fn] = _check_fn_cached(
+                        entry.check_fn,
+                        tool=name,
+                        toolset=entry.toolset,
+                    )
                 if not check_results[entry.check_fn]:
                     if not quiet:
                         logger.debug("Tool %s unavailable (check failed)", name)

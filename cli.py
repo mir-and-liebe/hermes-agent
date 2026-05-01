@@ -4273,6 +4273,15 @@ class HermesCLI:
             f"Tokens: {total_tokens:,}",
             f"Agent Running: {'Yes' if is_running else 'No'}",
         ])
+        try:
+            from agent.failure_policy import get_recent_failure_lines
+
+            recent_failures = get_recent_failure_lines(limit=3)
+        except Exception:
+            recent_failures = []
+        if recent_failures:
+            lines.extend(["", "Recent Failures:"])
+            lines.extend(f"- {line}" for line in recent_failures)
         self._console_print("\n".join(lines), highlight=False, markup=False)
     
     def _fast_command_available(self) -> bool:

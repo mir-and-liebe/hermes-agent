@@ -71,6 +71,19 @@ def mirror_to_session(
         return True
 
     except Exception as e:
+        from agent.failure_policy import degraded
+
+        degraded(
+            component="gateway.mirror",
+            operation="mirror_to_session",
+            exc=e,
+            user_visible_effect="delivery mirror was not written to the target session",
+            platform=platform,
+            chat_id=str(chat_id),
+            thread_id=thread_id,
+            user_id=user_id,
+            source_label=source_label,
+        )
         logger.debug(
             "Mirror failed for %s:%s:%s:%s: %s",
             platform,
@@ -105,7 +118,18 @@ def _find_session_id(
     try:
         with open(_SESSIONS_INDEX, encoding="utf-8") as f:
             data = json.load(f)
-    except Exception:
+    except Exception as e:
+        from agent.failure_policy import degraded
+
+        degraded(
+            component="gateway.mirror",
+            operation="find_session_id",
+            exc=e,
+            user_visible_effect="session mirror lookup could not read the sessions index",
+            platform=platform,
+            chat_id=str(chat_id),
+            thread_id=thread_id,
+        )
         return None
 
     platform_lower = platform.lower()
@@ -157,6 +181,15 @@ def _append_to_jsonl(session_id: str, message: dict) -> None:
         with open(transcript_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(message, ensure_ascii=False) + "\n")
     except Exception as e:
+        from agent.failure_policy import degraded
+
+        degraded(
+            component="gateway.mirror",
+            operation="append_jsonl",
+            exc=e,
+            user_visible_effect="delivery mirror was not appended to the JSONL transcript",
+            session_id=session_id,
+        )
         logger.debug("Mirror JSONL write failed: %s", e)
 
 
@@ -172,6 +205,15 @@ def _append_to_sqlite(session_id: str, message: dict) -> None:
             content=message.get("content"),
         )
     except Exception as e:
+        from agent.failure_policy import degraded
+
+        degraded(
+            component="gateway.mirror",
+            operation="append_sqlite",
+            exc=e,
+            user_visible_effect="delivery mirror was not appended to the SQLite session store",
+            session_id=session_id,
+        )
         logger.debug("Mirror SQLite write failed: %s", e)
     finally:
         if db is not None:

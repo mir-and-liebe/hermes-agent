@@ -53,6 +53,8 @@ def _make_agent(monkeypatch):
             self._tool_worker_threads: set = set()
             self._tool_worker_threads_lock = threading.Lock()
             self._active_children_lock = threading.Lock()
+            self._tool_guardrails = MagicMock()
+            self._tool_guardrails.before_call.return_value = MagicMock(allows_execution=True)
 
         def _touch_activity(self, desc):
             self._last_activity = time.time()
@@ -120,7 +122,7 @@ def test_concurrent_interrupt_cancels_pending(monkeypatch):
 
     original_invoke = agent._invoke_tool
 
-    def slow_tool(name, args, task_id, call_id=None):
+    def slow_tool(name, args, task_id, call_id=None, **kwargs):
         if name == "slow_one":
             # Block until the test sets the interrupt
             barrier.wait(timeout=10)

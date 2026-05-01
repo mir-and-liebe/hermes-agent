@@ -17,6 +17,8 @@ import time
 import unittest
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from tools.delegate_tool import (
     DELEGATE_BLOCKED_TOOLS,
     DELEGATE_TASK_SCHEMA,
@@ -33,6 +35,12 @@ from tools.delegate_tool import (
     _resolve_child_credential_pool,
     _resolve_delegation_credentials,
 )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_delegate_config(monkeypatch):
+    """Keep delegate_task tests independent from process-global CLI_CONFIG imports."""
+    monkeypatch.setattr("tools.delegate_tool._load_config", lambda: {})
 
 
 def _make_mock_parent(depth=0):
@@ -1527,7 +1535,7 @@ class TestDelegateHeartbeat(unittest.TestCase):
             # Long enough to exceed the OLD idle threshold (5 cycles) at
             # the patched interval, but shorter than the new in-tool
             # threshold.
-            time.sleep(0.4)
+            time.sleep(0.65)
             return {"final_response": "done", "completed": True, "api_calls": 1}
 
         child.run_conversation.side_effect = slow_run
@@ -1536,7 +1544,7 @@ class TestDelegateHeartbeat(unittest.TestCase):
         # the in-tool branch takes effect: with a 0.05s interval and the
         # default _HEARTBEAT_STALE_CYCLES_IDLE=5, the old behavior would
         # trip after 0.25s and stop firing. We should see heartbeats
-        # continuing through the full 0.4s run.
+        # continuing through the full 0.65s run.
         with patch("tools.delegate_tool._HEARTBEAT_INTERVAL", 0.05):
             _run_single_child(
                 task_index=0,
@@ -1551,7 +1559,7 @@ class TestDelegateHeartbeat(unittest.TestCase):
         self.assertGreater(
             len(touch_calls), 6,
             f"Heartbeat stopped too early while child was inside a tool; "
-            f"got {len(touch_calls)} touches over 0.4s at 0.05s interval",
+            f"got {len(touch_calls)} touches over 0.65s at 0.05s interval",
         )
 
     def test_heartbeat_still_trips_idle_stale_when_no_tool(self):

@@ -69,6 +69,12 @@ def _stub_child_builder(monkeypatch):
     )
 
 
+@pytest.fixture(autouse=True)
+def _isolate_delegate_config(monkeypatch):
+    """Keep this module independent from process-global CLI_CONFIG imports."""
+    monkeypatch.setattr("tools.delegate_tool._load_config", lambda: {})
+
+
 def _register_capturing_hook():
     captured = []
 

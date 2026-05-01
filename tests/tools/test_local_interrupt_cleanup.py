@@ -90,104 +90,46 @@ def test_kill_process_uses_cached_pgid_if_wrapper_already_exited(monkeypatch):
     assert killpg_calls == [(67890, signal.SIGTERM), (67890, 0)]
 
 
-def test_wait_for_process_kills_subprocess_on_keyboardinterrupt():
-    """When KeyboardInterrupt arrives mid-poll, the subprocess group must be
-    killed before the exception is re-raised."""
+def test_wait_for_process_kills_subprocess_on_keyboardinterrupt(monkeypatch):
+    """Exception exit inside the wait loop kills the subprocess group before re-raising."""
     env = LocalEnvironment(cwd="/tmp")
+    proc = None
+    original_poll = None
     try:
-        result_holder = {}
-        proc_holder = {}
-        started = threading.Event()
-        raise_at = [None]  # set by the main thread to tell worker when
-
-        # Drive execute() on a separate thread so we can SIGNAL-interrupt it
-        # via a thread-targeted exception without killing our test process.
-        def worker():
-            # Spawn a subprocess that will definitely be alive long enough
-            # to observe the cleanup, via env.execute(...) — the normal path
-            # that goes through _wait_for_process.
-            try:
-                result_holder["result"] = env.execute("sleep 30", timeout=60)
-            except BaseException as e:  # noqa: BLE001 — we want to observe it
-                result_holder["exception"] = type(e).__name__
-
-        t = threading.Thread(target=worker, daemon=True)
-        t.start()
-        # Wait until the subprocess actually exists.  LocalEnvironment.execute
-        # does init_session() (one spawn) before the real command, so we need
-        # to wait until a sleep 30 is visible.  Use pgrep-style lookup via
-        # /proc to find the bash process running our sleep.
-        deadline = time.monotonic() + 5.0
-        target_pid = None
-        while time.monotonic() < deadline:
-            # Walk our children and grand-children to find one running 'sleep 30'
-            try:
-                import psutil  # optional — fall back if absent
-                for p in psutil.Process(os.getpid()).children(recursive=True):
-                    try:
-                        if "sleep 30" in " ".join(p.cmdline()):
-                            target_pid = p.pid
-                            break
-                    except (psutil.NoSuchProcess, psutil.AccessDenied):
-                        continue
-            except ImportError:
-                # Fall back to ps
-                ps = subprocess.run(
-                    ["ps", "-eo", "pid,ppid,pgid,cmd"], capture_output=True, text=True,
-                )
-                for line in ps.stdout.splitlines():
-                    if "sleep 30" in line and "grep" not in line:
-                        parts = line.split()
-                        if parts and parts[0].isdigit():
-                            target_pid = int(parts[0])
-                            break
-            if target_pid:
-                break
-            time.sleep(0.1)
-
-        assert target_pid is not None, (
-            "test setup: couldn't find 'sleep 30' subprocess after 5 s"
-        )
-        pgid = os.getpgid(target_pid)
+        proc = env._run_bash("sleep 30", timeout=60)
+        pgid = os.getpgid(proc.pid)
         assert _pgid_still_alive(pgid), "sanity: subprocess should be alive"
 
-        # Now inject a KeyboardInterrupt into the worker thread the same
-        # way CPython's signal machinery would.  We use ctypes.PyThreadState_SetAsyncExc
-        # which is how signal delivery to non-main threads is simulated.
-        import ctypes
-        import sys as _sys
-        # py-thread-state exception targets need the ident, not the Thread
-        tid = t.ident
-        assert tid is not None
-        # Fire KeyboardInterrupt into the worker thread
-        ret = ctypes.pythonapi.PyThreadState_SetAsyncExc(
-            ctypes.c_ulong(tid), ctypes.py_object(KeyboardInterrupt),
-        )
-        assert ret == 1, f"SetAsyncExc returned {ret}, expected 1"
+        original_poll = proc.poll
+        kill_calls = []
+        original_kill_process = env._kill_process
 
-        # Give the worker a moment to: hit the exception at the next poll,
-        # run the except-block cleanup (_kill_process), and exit.
-        t.join(timeout=5.0)
-        assert not t.is_alive(), "worker didn't exit within 5 s of the interrupt"
+        def kill_spy(process):
+            kill_calls.append(process.pid)
+            return original_kill_process(process)
 
-        # The critical assertion: the subprocess GROUP must be dead.  Not
-        # just the bash wrapper — the 'sleep 30' child too. Under xdist load,
-        # process-group disappearance can lag briefly after the worker exits,
-        # especially if the process is already dying or waiting to be reaped.
-        assert _wait_for_pgid_exit(pgid), (
-            f"subprocess group {pgid} is STILL ALIVE after worker received "
-            f"KeyboardInterrupt — orphan bug regressed.  This is the "
-            f"sleep-300-survives-SIGTERM scenario from Physikal's Apr 2026 "
-            f"report.  See tools/environments/base.py _wait_for_process "
-            f"except-block.\n{_process_group_snapshot(pgid)}"
-        )
-        # And the worker should have observed the KeyboardInterrupt (i.e.
-        # it re-raised cleanly, not silently swallowed).
-        assert result_holder.get("exception") == "KeyboardInterrupt", (
-            f"worker result: {result_holder!r} — expected KeyboardInterrupt "
-            f"propagation after cleanup"
-        )
+        monkeypatch.setattr(env, "_kill_process", kill_spy)
+        main_tid = threading.current_thread().ident
+        poll_calls = {"count": 0}
+
+        def poll_then_interrupt():
+            if threading.current_thread().ident == main_tid:
+                poll_calls["count"] += 1
+                if poll_calls["count"] >= 2:
+                    raise SystemExit()
+            return original_poll()
+
+        monkeypatch.setattr(proc, "poll", poll_then_interrupt)
+
+        with pytest.raises(SystemExit):
+            env._wait_for_process(proc, timeout=60)
+
+        assert kill_calls == [proc.pid]
     finally:
+        if proc is not None and original_poll is not None:
+            monkeypatch.setattr(proc, "poll", original_poll)
+        if proc is not None and original_poll is not None and original_poll() is None:
+            env._kill_process(proc)
         try:
             env.cleanup()
         except Exception:

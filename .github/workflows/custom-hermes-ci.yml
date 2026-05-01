@@ -1,0 +1,99 @@
+name: Custom Hermes CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: custom-hermes-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  custom-safety-net:
+    name: Custom distribution safety net
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+
+      - name: Set up Python 3.11
+        run: uv python install 3.11
+
+      - name: Install dependencies
+        run: |
+          uv venv .venv --python 3.11
+          source .venv/bin/activate
+          uv pip install -e ".[all,dev]"
+
+      - name: Shell syntax checks
+        run: |
+          bash -n scripts/hermes-custom-update.sh
+          bash -n scripts/run_tests.sh
+
+      - name: Python compile smoke
+        run: |
+          source .venv/bin/activate
+          python -m py_compile \
+            cli.py \
+            cron/scheduler.py \
+            gateway/hooks.py \
+            gateway/mirror.py \
+            hermes_cli/main.py \
+            hermes_cli/parallel.py \
+            hermes_cli/skin_engine.py \
+            hermes_cli/tips.py \
+            hermes_cli/worktree.py \
+            model_tools.py \
+            run_agent.py \
+            tools/file_tools.py \
+            tools/registry.py \
+            tui_gateway/render.py \
+            agent/context_checkpoint.py \
+            agent/context_compressor.py \
+            agent/context_pressure.py \
+            agent/failure_policy.py \
+            agent/manual_compression_feedback.py \
+            scripts/audit_silent_failures.py
+
+      - name: Targeted custom feature tests
+        run: |
+          source .venv/bin/activate
+          python -m pytest \
+            tests/hermes_cli/test_parallel.py \
+            tests/cli/test_worktree.py \
+            tests/cli/test_worktree_security.py \
+            tests/agent/test_context_pressure.py \
+            tests/agent/test_context_checkpoint.py \
+            tests/agent/test_context_compressor.py \
+            tests/run_agent/test_compression_checkpoints.py \
+            tests/cli/test_manual_compress.py \
+            tests/agent/test_failure_policy.py \
+            tests/cron/test_failure_visibility.py \
+            tests/gateway/test_hooks.py \
+            tests/gateway/test_mirror.py \
+            tests/model_tools/test_failure_visibility.py \
+            tests/run_agent/test_failure_visibility.py \
+            tests/scripts/test_audit_silent_failures.py \
+            tests/scripts/test_run_tests_silent_failure_audit.py \
+            tests/tools/test_registry.py \
+            tests/cli/test_cli_status_command.py \
+            tests/hermes_cli/test_skin_engine.py \
+            tests/tui_gateway/test_render.py \
+            -q
+        env:
+          OPENROUTER_API_KEY: ""
+          OPENAI_API_KEY: ""
+          NOUS_API_KEY: ""

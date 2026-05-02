@@ -41,6 +41,7 @@ jobs:
       - name: Shell syntax checks
         run: |
           bash -n scripts/hermes-custom-update.sh
+          bash -n scripts/hermes-fork-upgrade.sh
           bash -n scripts/run_tests.sh
 
       - name: Python compile smoke

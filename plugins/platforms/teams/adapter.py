@@ -38,7 +38,6 @@ except ImportError:
 
 try:
     from microsoft_teams.apps import App, ActivityContext
-    from microsoft_teams.common.http.client import ClientOptions
     from microsoft_teams.api import MessageActivity, ConversationReference
     from microsoft_teams.api.activities.typing import TypingActivityInput
     from microsoft_teams.api.activities.invoke.adaptive_card import AdaptiveCardInvokeActivity
@@ -54,6 +53,11 @@ try:
         HttpRouteHandler,
     )
     from microsoft_teams.cards import AdaptiveCard, ExecuteAction, TextBlock
+
+    try:
+        from microsoft_teams.common.http.client import ClientOptions
+    except ImportError:
+        ClientOptions = None
 
     TEAMS_SDK_AVAILABLE = True
 except ImportError:
@@ -205,13 +209,15 @@ class TeamsAdapter(BasePlatformAdapter):
             aiohttp_app = web.Application()
             aiohttp_app.router.add_get("/health", lambda _: web.Response(text="ok"))
 
-            self._app = App(
-                client_id=self._client_id,
-                client_secret=self._client_secret,
-                tenant_id=self._tenant_id,
-                http_server_adapter=_AiohttpBridgeAdapter(aiohttp_app),
-                client=ClientOptions(headers={"User-Agent": "Hermes"}),
-            )
+            app_kwargs = {
+                "client_id": self._client_id,
+                "client_secret": self._client_secret,
+                "tenant_id": self._tenant_id,
+                "http_server_adapter": _AiohttpBridgeAdapter(aiohttp_app),
+            }
+            if ClientOptions is not None:
+                app_kwargs["client"] = ClientOptions(headers={"User-Agent": "Hermes"})
+            self._app = App(**app_kwargs)
 
             # Register message handler before initialize()
             @self._app.on_message

@@ -550,8 +550,24 @@ def _start_agent_build(sid: str, session: dict) -> None:
             finally:
                 _clear_session_context(tokens)
 
-            # Session DB row deferred to first run_conversation() call.
-            # pending_title applied post-first-message (see cli.exec handler).
+            # Session DB row is still created lazily by the first
+            # run_conversation() call.  If a queued title is already known to
+            # be invalid (for example duplicate-title ValueError), drop it so
+            # future prompt completion does not retry the same stale title
+            # forever.
+            pending_title = current.get("pending_title")
+            if pending_title:
+                pending_db = _get_db()
+                if pending_db is not None:
+                    try:
+                        if pending_db.set_session_title(key, pending_title):
+                            current["pending_title"] = None
+                    except ValueError:
+                        current["pending_title"] = None
+                    except Exception:
+                        pass
+            # Otherwise pending_title is applied post-first-message (see
+            # cli.exec handler), once the lazy DB row exists.
             current["agent"] = agent
 
             try:
@@ -2993,6 +3009,8 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                     try:
                         if _pdb.set_session_title(session.get("session_key") or sid, _pending):
                             session["pending_title"] = None
+                    except ValueError:
+                        session["pending_title"] = None
                     except Exception:
                         pass  # Best effort — auto-title will handle it below
 

@@ -81,6 +81,19 @@ def _make_agent(monkeypatch):
     # tool batch. Stub it as a no-op — this test exercises interrupt
     # fanout, not steer injection.
     stub._apply_pending_steer_to_tool_results = lambda *a, **kw: None
+
+    class _AllowGuardrailDecision:
+        allows_execution = True
+
+    class _AllowGuardrails:
+        def before_call(self, *args, **kwargs):
+            return _AllowGuardrailDecision()
+
+    stub._tool_guardrails = _AllowGuardrails()
+    stub._tool_guardrail_halt_decision = None
+    stub._append_guardrail_observation = (
+        lambda tool_name, function_args, function_result, *, failed: function_result
+    )
     stub._invoke_tool = MagicMock(side_effect=lambda *a, **kw: '{"ok": true}')
     return stub
 
@@ -184,7 +197,7 @@ def test_running_concurrent_worker_sees_is_interrupted(monkeypatch):
     observed = {"saw_true": False, "poll_count": 0, "worker_tid": None}
     worker_started = threading.Event()
 
-    def polling_tool(name, args, task_id, call_id=None, messages=None):
+    def polling_tool(name, args, task_id, call_id=None, messages=None, **kwargs):
         observed["worker_tid"] = threading.current_thread().ident
         worker_started.set()
         deadline = time.monotonic() + 5.0

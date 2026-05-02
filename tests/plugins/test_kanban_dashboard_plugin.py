@@ -479,7 +479,10 @@ def test_ws_events_rejects_when_token_required(tmp_path, monkeypatch):
 
     # Stub web_server so _check_ws_token has a token to compare against.
     import types
+    import hermes_cli
+
     stub = types.SimpleNamespace(_SESSION_TOKEN="secret-xyz")
+    monkeypatch.setattr(hermes_cli, "web_server", stub, raising=False)
     monkeypatch.setitem(sys.modules, "hermes_cli.web_server", stub)
 
     app = FastAPI()

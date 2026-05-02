@@ -69,7 +69,8 @@ jobs:
             agent/manual_compression_feedback.py \
             agent/skill_miss_detector.py \
             scripts/audit_silent_failures.py \
-            scripts/analyze_missed_skills.py
+            scripts/analyze_missed_skills.py \
+            scripts/hermes_custom_update_state.py
 
       - name: Targeted custom feature tests
         run: |
@@ -92,6 +93,8 @@ jobs:
             tests/run_agent/test_failure_visibility.py \
             tests/scripts/test_audit_silent_failures.py \
             tests/scripts/test_analyze_missed_skills.py \
+            tests/scripts/test_hermes_custom_update_state.py \
+            tests/scripts/test_hermes_custom_update_script.py \
             tests/scripts/test_run_tests_silent_failure_audit.py \
             tests/tools/test_registry.py \
             tests/cli/test_cli_status_command.py \

@@ -12,7 +12,7 @@ import subprocess
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from hermes_cli.main import cmd_update
+import hermes_cli.main as main_module
 
 
 def _make_run_side_effect(
@@ -74,7 +74,7 @@ class TestUpdateYesConfigMigration:
         args = SimpleNamespace(yes=True)
 
         with patch("builtins.input") as mock_input:
-            cmd_update(args)
+            main_module.cmd_update(args)
             # Never prompted the user.
             mock_input.assert_not_called()
 
@@ -113,12 +113,12 @@ class TestUpdateYesConfigMigration:
 
         args = SimpleNamespace(yes=False)
 
-        with patch("builtins.input", return_value="n") as mock_input, patch(
-            "hermes_cli.main.sys"
+        with patch("builtins.input", return_value="n") as mock_input, patch.object(
+            main_module, "sys"
         ) as mock_sys:
             mock_sys.stdin.isatty.return_value = True
             mock_sys.stdout.isatty.return_value = True
-            cmd_update(args)
+            main_module.cmd_update(args)
             # The user was actually prompted.
             assert mock_input.called
             prompts = [c.args[0] if c.args else "" for c in mock_input.call_args_list]
@@ -128,9 +128,10 @@ class TestUpdateYesConfigMigration:
 class TestUpdateYesStashRestore:
     """--yes auto-restores the pre-update autostash without prompting."""
 
-    @patch("hermes_cli.main._restore_stashed_changes")
-    @patch(
-        "hermes_cli.main._stash_local_changes_if_needed",
+    @patch.object(main_module, "_restore_stashed_changes")
+    @patch.object(
+        main_module,
+        "_stash_local_changes_if_needed",
         return_value="stash@{0}",
     )
     @patch("hermes_cli.config.check_config_version", return_value=(1, 1))
@@ -156,7 +157,7 @@ class TestUpdateYesStashRestore:
 
         args = SimpleNamespace(yes=True)
 
-        cmd_update(args)
+        main_module.cmd_update(args)
 
         # _restore_stashed_changes was called, and called with prompt_user=False
         # every time (so the user never sees "Restore local changes now?").

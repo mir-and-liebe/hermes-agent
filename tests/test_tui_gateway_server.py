@@ -3463,6 +3463,8 @@ def test_browser_manage_connect_default_local_reports_launch_hint(monkeypatch):
     )
     assert any(
         "No Chrome/Chromium executable was found" in line
+        or "Start Chrome with remote debugging" in line
+        or "open -a Google Chrome" in line
         for line in resp["result"]["messages"]
     )
     assert any(

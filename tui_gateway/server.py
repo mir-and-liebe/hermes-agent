@@ -550,25 +550,33 @@ def _start_agent_build(sid: str, session: dict) -> None:
             finally:
                 _clear_session_context(tokens)
 
-            # Session DB row is still created lazily by the first
-            # run_conversation() call.  If a queued title is already known to
-            # be invalid (for example duplicate-title ValueError), drop it so
-            # future prompt completion does not retry the same stale title
-            # forever.
-            pending_title = current.get("pending_title")
-            if pending_title:
-                pending_db = _get_db()
-                if pending_db is not None:
+            # Session DB row deferred to first run_conversation() call.
+            # pending_title is normally applied post-first-message; also make
+            # startup clear terminal duplicate-title errors so they do not retry
+            # forever when a title request races with agent construction.
+            current["agent"] = agent
+            _pending = current.get("pending_title")
+            if _pending:
+                _pdb = _get_db()
+                if _pdb:
                     try:
-                        if pending_db.set_session_title(key, pending_title):
+                        if _pdb.set_session_title(current.get("session_key") or sid, _pending):
                             current["pending_title"] = None
                     except ValueError:
                         current["pending_title"] = None
-                    except Exception:
-                        pass
-            # Otherwise pending_title is applied post-first-message (see
-            # cli.exec handler), once the lazy DB row exists.
-            current["agent"] = agent
+                    except Exception as exc:
+                        try:
+                            from agent.failure_policy import best_effort
+
+                            best_effort(
+                                component="tui_gateway.server",
+                                operation="apply_startup_pending_title",
+                                exc=exc,
+                                user_visible_effect="pending TUI session title was not applied at startup",
+                                metadata={"session_id": sid},
+                            )
+                        except Exception:
+                            logger.debug("startup pending title apply failed: %s", exc, exc_info=True)
 
             try:
                 worker = _SlashWorker(key, getattr(agent, "model", _resolve_model()))
@@ -3010,9 +3018,22 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                         if _pdb.set_session_title(session.get("session_key") or sid, _pending):
                             session["pending_title"] = None
                     except ValueError:
+                        # Duplicate/invalid explicit titles are terminal for this
+                        # pending title; do not retry forever on every turn.
                         session["pending_title"] = None
-                    except Exception:
-                        pass  # Best effort — auto-title will handle it below
+                    except Exception as exc:
+                        try:
+                            from agent.failure_policy import best_effort
+
+                            best_effort(
+                                component="tui_gateway.server",
+                                operation="apply_pending_title",
+                                exc=exc,
+                                user_visible_effect="pending TUI session title was not applied",
+                                metadata={"session_id": sid},
+                            )
+                        except Exception:
+                            logger.debug("pending title apply failed: %s", exc, exc_info=True)
 
             if (
                 status == "complete"

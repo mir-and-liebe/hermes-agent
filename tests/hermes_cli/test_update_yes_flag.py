@@ -12,7 +12,16 @@ import subprocess
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 import hermes_cli.main as main_module
+
+
+@pytest.fixture(autouse=True)
+def _disable_update_hangup_io_wrapping(monkeypatch):
+    """Keep update prompt tests independent from cmd_update's stdio wrapper."""
+    monkeypatch.setattr(main_module, "_install_hangup_protection", lambda gateway_mode=False: {})
+    monkeypatch.setattr(main_module, "_finalize_update_output", lambda _state: None)
 
 
 def _make_run_side_effect(

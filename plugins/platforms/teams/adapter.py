@@ -526,9 +526,22 @@ class TeamsAdapter(BasePlatformAdapter):
         if not self._app:
             return
         try:
-            await self._app.send(chat_id, TypingActivityInput())
-        except Exception:
-            pass
+            activity_factory = TypingActivityInput
+            activity = activity_factory() if callable(activity_factory) else {"type": "typing"}
+            await self._app.send(chat_id, activity)
+        except Exception as exc:
+            try:
+                from agent.failure_policy import best_effort
+
+                best_effort(
+                    component="gateway.teams",
+                    operation="send_typing",
+                    exc=exc,
+                    user_visible_effect="Teams typing indicator was not sent",
+                    metadata={"chat_id": chat_id},
+                )
+            except Exception:
+                logger.debug("[teams] send_typing failed: %s", exc, exc_info=True)
 
     async def send_image(
         self,

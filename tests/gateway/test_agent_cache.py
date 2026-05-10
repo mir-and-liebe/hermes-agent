@@ -127,6 +127,21 @@ class TestAgentConfigSignature:
         )
         assert sig1 != sig2
 
+    def test_max_tokens_change_busts_cache(self):
+        """Editing model.max_tokens in config must produce a new signature."""
+        from gateway.run import GatewayRunner
+
+        runtime = {"api_key": "k", "base_url": "u", "provider": "p"}
+        sig1 = GatewayRunner._agent_config_signature(
+            "m", runtime, [], "",
+            cache_keys={"model.max_tokens": 4096},
+        )
+        sig2 = GatewayRunner._agent_config_signature(
+            "m", runtime, [], "",
+            cache_keys={"model.max_tokens": 8192},
+        )
+        assert sig1 != sig2
+
     def test_compression_threshold_change_busts_cache(self):
         from gateway.run import GatewayRunner
 
@@ -195,9 +210,16 @@ class TestExtractCacheBustingConfig:
         from gateway.run import GatewayRunner
 
         out = GatewayRunner._extract_cache_busting_config(
-            {"model": {"context_length": 272_000, "provider": "openrouter"}}
+            {
+                "model": {
+                    "context_length": 272_000,
+                    "max_tokens": 4096,
+                    "provider": "openrouter",
+                }
+            }
         )
         assert out["model.context_length"] == 272_000
+        assert out["model.max_tokens"] == 4096
 
     def test_reads_compression_subkeys(self):
         from gateway.run import GatewayRunner
@@ -971,6 +993,7 @@ class TestAgentCacheSpilloverLive:
             f"Expected exactly {CAP} entries after concurrent inserts, "
             f"got {len(runner._agent_cache)}."
         )
+
 
     def test_evicted_session_next_turn_gets_fresh_agent(self, monkeypatch):
         """After eviction, the same session_key can insert a fresh agent.

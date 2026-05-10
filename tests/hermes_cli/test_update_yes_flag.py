@@ -122,12 +122,19 @@ class TestUpdateYesConfigMigration:
 
         args = SimpleNamespace(yes=False)
 
+        # Patch ``sys.stdin.isatty`` and ``sys.stdout.isatty`` directly on the
+        # real ``sys`` module instead of replacing ``hermes_cli.main.sys`` with
+        # a MagicMock. The MagicMock approach was flaky under ``pytest-xdist``
+        # — a sibling test that imported ``hermes_cli.main`` first could leave
+        # a different ``sys`` reference resolved inside the function and the
+        # mock would never be consulted, with CI then taking the
+        # "Non-interactive session" branch instead of prompting.
+        import sys as _sys
+
         with patch("builtins.input", return_value="n") as mock_input, patch.object(
-            main_module, "sys"
-        ) as mock_sys:
-            mock_sys.stdin.isatty.return_value = True
-            mock_sys.stdout.isatty.return_value = True
-            main_module.cmd_update(args)
+            _sys.stdin, "isatty", return_value=True
+        ), patch.object(_sys.stdout, "isatty", return_value=True):
+            cmd_update(args)
             # The user was actually prompted.
             assert mock_input.called
             prompts = [c.args[0] if c.args else "" for c in mock_input.call_args_list]
@@ -175,3 +182,4 @@ class TestUpdateYesStashRestore:
             assert call.kwargs.get("prompt_user") is False, (
                 f"Expected prompt_user=False under --yes, got {call.kwargs}"
             )
+

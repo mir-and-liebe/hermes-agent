@@ -1066,6 +1066,30 @@ def _store_provider_state(
         auth_store["active_provider"] = provider_id
 
 
+def _provider_entries_from_auth_store(auth_store: Dict[str, Any], provider_id: str) -> List[Dict[str, Any]]:
+    """Return credential-pool entries for ``provider_id`` from an auth store."""
+    pool = auth_store.get("credential_pool")
+    if not isinstance(pool, dict):
+        return []
+    entries = pool.get(provider_id)
+    return list(entries) if isinstance(entries, list) else []
+
+
+def _select_usable_provider_entry(entries: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Pick the first non-exhausted credential entry with usable runtime tokens."""
+    candidates = [entry for entry in entries if isinstance(entry, dict)]
+    candidates.sort(key=lambda entry: int(entry.get("priority") or 0))
+    for entry in candidates:
+        status = str(entry.get("last_status") or "").strip().lower()
+        if status == "exhausted":
+            continue
+        access_token = entry.get("access_token")
+        refresh_token = entry.get("refresh_token")
+        if isinstance(access_token, str) and access_token.strip() and isinstance(refresh_token, str) and refresh_token.strip():
+            return dict(entry)
+    return None
+
+
 def is_known_auth_provider(provider_id: str) -> bool:
     normalized = (provider_id or "").strip().lower()
     return normalized in PROVIDER_REGISTRY or normalized in SERVICE_PROVIDER_NAMES
@@ -2426,12 +2450,28 @@ def _read_codex_tokens(*, _lock: bool = True) -> Dict[str, Any]:
         auth_store = _load_auth_store()
     state = _load_provider_state(auth_store, "openai-codex")
     if not state:
-        raise AuthError(
-            "No Codex credentials stored. Run `hermes auth` to authenticate.",
-            provider="openai-codex",
-            code="codex_auth_missing",
-            relogin_required=True,
-        )
+        entries = _provider_entries_from_auth_store(auth_store, "openai-codex")
+        if not entries:
+            global_store = _load_global_auth_store()
+            if global_store:
+                entries = _provider_entries_from_auth_store(global_store, "openai-codex")
+        pool_entry = _select_usable_provider_entry(entries)
+        if pool_entry:
+            state = {
+                "tokens": {
+                    "access_token": pool_entry["access_token"],
+                    "refresh_token": pool_entry["refresh_token"],
+                },
+                "last_refresh": pool_entry.get("last_refresh"),
+                "auth_mode": "chatgpt",
+            }
+        else:
+            raise AuthError(
+                "No Codex credentials stored. Run `hermes auth` to authenticate.",
+                provider="openai-codex",
+                code="codex_auth_missing",
+                relogin_required=True,
+            )
     tokens = state.get("tokens")
     if not isinstance(tokens, dict):
         raise AuthError(

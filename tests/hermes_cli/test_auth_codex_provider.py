@@ -75,6 +75,43 @@ def test_read_codex_tokens_missing(tmp_path, monkeypatch):
     assert exc.value.code == "codex_auth_missing"
 
 
+def test_read_codex_tokens_falls_back_to_credential_pool(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    (hermes_home / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "providers": {},
+        "credential_pool": {
+            "openai-codex": [
+                {
+                    "id": "old",
+                    "auth_type": "oauth",
+                    "priority": 0,
+                    "access_token": "stale-access",
+                    "refresh_token": "stale-refresh",
+                    "last_status": "exhausted",
+                },
+                {
+                    "id": "live",
+                    "auth_type": "oauth",
+                    "priority": 1,
+                    "access_token": "pool-access",
+                    "refresh_token": "pool-refresh",
+                    "last_status": "ok",
+                    "last_refresh": "2026-05-12T00:00:00Z",
+                },
+            ]
+        },
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    data = _read_codex_tokens()
+
+    assert data["tokens"]["access_token"] == "pool-access"
+    assert data["tokens"]["refresh_token"] == "pool-refresh"
+    assert data["last_refresh"] == "2026-05-12T00:00:00Z"
+
+
 def test_resolve_codex_runtime_credentials_missing_access_token(tmp_path, monkeypatch):
     hermes_home = tmp_path / "hermes"
     _setup_hermes_auth(hermes_home, access_token="")

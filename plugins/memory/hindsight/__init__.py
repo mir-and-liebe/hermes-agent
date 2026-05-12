@@ -35,6 +35,7 @@ import json
 import logging
 import os
 import queue
+import re
 import threading
 
 from datetime import datetime, timezone
@@ -59,6 +60,9 @@ _DEFAULT_IDLE_TIMEOUT = 300  # seconds — Hindsight embedded daemon default
 # unique document_id fallback for older APIs.
 _MIN_VERSION_FOR_UPDATE_MODE_APPEND = "0.5.0"
 _VALID_BUDGETS = {"low", "mid", "high"}
+_INLINE_DATA_URL_RE = re.compile(
+    r"data:image/[A-Za-z0-9.+-]+;base64,[A-Za-z0-9+/=\r\n_-]+"
+)
 _PROVIDER_DEFAULT_MODELS = {
     "openai": "gpt-4o-mini",
     "anthropic": "claude-haiku-4-5",
@@ -70,6 +74,13 @@ _PROVIDER_DEFAULT_MODELS = {
     "lmstudio": "local-model",
     "openai_compatible": "your-model-name",
 }
+
+
+def _sanitize_retain_text(value: str) -> str:
+    """Remove bulky inline image data URLs before sending text to memory extraction."""
+    if not value:
+        return value
+    return _INLINE_DATA_URL_RE.sub("[image omitted from memory: inline data URL]", value)
 
 
 def _parse_int_setting(value: Any, default: int) -> int:
@@ -1333,6 +1344,8 @@ class HindsightMemoryProvider(MemoryProvider):
 
     def _build_turn_messages(self, user_content: str, assistant_content: str) -> List[Dict[str, str]]:
         now = datetime.now(timezone.utc).isoformat()
+        user_content = _sanitize_retain_text(user_content)
+        assistant_content = _sanitize_retain_text(assistant_content)
         return [
             {
                 "role": "user",

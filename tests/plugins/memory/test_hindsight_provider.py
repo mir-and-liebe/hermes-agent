@@ -701,6 +701,25 @@ class TestSyncTurn:
         assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?\+00:00", content[0][0]["timestamp"])
         assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z", item["metadata"]["retained_at"])
 
+    def test_sync_turn_strips_inline_image_data_urls(self, provider_with_config):
+        p = provider_with_config()
+        image_payload = "A" * 5000
+
+        p.sync_turn(
+            "[{'type': 'text', 'text': 'fix this screenshot'}, {'type': 'image_url', 'image_url': {'url': 'data:image/png;base64," + image_payload + "'}}]",
+            "I inspected the screenshot.",
+        )
+        p._retain_queue.join()
+
+        item = p._client.aretain_batch.call_args.kwargs["items"][0]
+        content = item["content"]
+        assert "fix this screenshot" in content
+        assert "I inspected the screenshot" in content
+        assert "[image omitted from memory: inline data URL]" in content
+        assert "data:image/png;base64" not in content
+        assert image_payload not in content
+        assert len(content) < 2000
+
     def test_sync_turn_skipped_when_auto_retain_off(self, provider_with_config):
         p = provider_with_config(auto_retain=False)
         p.sync_turn("hello", "hi")

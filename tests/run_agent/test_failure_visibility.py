@@ -4,10 +4,15 @@ from scripts.audit_silent_failures import audit_paths
 
 ROOT = Path(__file__).resolve().parents[2]
 RUN_AGENT = ROOT / "run_agent.py"
+CONVERSATION_LOOP = ROOT / "agent" / "conversation_loop.py"
+
+
+def _agent_loop_source() -> str:
+    return "\n".join(path.read_text() for path in (RUN_AGENT, CONVERSATION_LOOP))
 
 
 def test_targeted_agent_loop_failures_are_reported_with_failure_policy():
-    source = RUN_AGENT.read_text()
+    source = _agent_loop_source()
 
     for operation in [
         "cleanup_dead_connections",
@@ -35,7 +40,7 @@ def test_targeted_agent_loop_sites_do_not_introduce_new_silent_audit_findings():
         (item["file"], item["pattern"], item.get("snippet", ""))
         for item in __import__("json").loads(baseline.read_text())["findings"]
     }
-    current = audit_paths([RUN_AGENT])
+    current = audit_paths([RUN_AGENT, CONVERSATION_LOOP])
     new_findings = [
         item for item in current
         if (item["file"], item["pattern"], item.get("snippet", "")) not in baseline_keys

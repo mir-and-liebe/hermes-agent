@@ -1,7 +1,7 @@
 {
   "name": "example",
   "label": "Example",
-  "description": "Example dashboard plugin — demonstrates the plugin SDK",
+  "description": "Example dashboard plugin — demonstrates the plugin SDK and auth-safe API route",
   "icon": "Sparkles",
   "version": "1.0.0",
   "tab": {

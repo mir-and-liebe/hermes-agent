@@ -611,7 +611,33 @@ To find a topic's `thread_id`, open the topic in Telegram Web or Desktop and loo
 
 - **Bot API 9.4 (Feb 2026):** Private Chat Topics — bots can create forum topics in 1-on-1 DM chats via `createForumTopic`. Hermes uses this for two distinct features: operator-curated [Private Chat Topics](#private-chat-topics-bot-api-94) (config-driven, fixed topic list) and user-driven [Multi-session DM mode](#multi-session-dm-mode-topic) (activated by `/topic`, unlimited user-created topics).
 - **Privacy policy:** Telegram now requires bots to have a privacy policy. Set one via BotFather with `/setprivacy_policy`, or Telegram may auto-generate a placeholder. This is particularly important if your bot is public-facing.
-- **Message streaming:** Bot API 9.x added support for streaming long responses, which can improve perceived latency for lengthy agent replies.
+- **Bot API 9.5 (Mar 2026): Native streaming via `sendMessageDraft`.** Hermes uses Telegram's native streaming-draft API to render an animated preview of the agent's reply as tokens arrive in private chats. Drops the per-edit jitter you used to see with the legacy `editMessageText` polling path on slow models.
+
+### Streaming transport (`gateway.streaming.transport`)
+
+When streaming is enabled (`gateway.streaming.enabled: true`), Hermes picks one of four transports:
+
+| Value | Behaviour |
+|---|---|
+| `auto` (default) | Native draft streaming on supported chats (currently Telegram DMs); legacy edit-based path otherwise. Falls back gracefully if a draft frame fails. |
+| `draft` | Force native drafts. Logs a downgrade and falls back to edit if the chat doesn't support drafts (e.g. groups/topics). |
+| `edit` | Legacy progressive `editMessageText` polling for every chat type. |
+| `off` | Disable streaming entirely (final reply only, no progressive updates). |
+
+In `~/.hermes/config.yaml`:
+
+```yaml
+gateway:
+  streaming:
+    enabled: true
+    transport: auto    # auto | draft | edit | off
+```
+
+**What you'll see in DMs with `auto` (default)** — when the agent generates a reply, Telegram shows an animated draft preview that updates token-by-token. When the reply finishes, it's delivered as a regular message and the draft preview clears naturally on the client. Drafts have no message id, so the final answer is what stays in your chat history.
+
+**What about groups, supergroups, forum topics?** Telegram restricts `sendMessageDraft` to private chats (DMs). The gateway transparently falls back to the edit-based path for everything else — same UX as before.
+
+**What if a draft frame fails?** Any failure (transient network error, server-side rejection, older python-telegram-bot install) flips that response back to the edit-based path for the rest of the stream. The next response gets a fresh attempt.
 
 ## Rendering: Tables and Link Previews
 
@@ -880,6 +906,19 @@ When the agent tries to run a potentially dangerous command, it asks you for app
 > ⚠️ This command is potentially dangerous (recursive delete). Reply "yes" to approve.
 
 Reply "yes"/"y" to approve or "no"/"n" to deny.
+
+## Interactive Prompts (clarify)
+
+When the agent calls the `clarify` tool — to ask which approach you prefer, get post-task feedback, or check before a non-trivial decision — Telegram renders the question with **inline keyboard buttons**:
+
+> ❓ Which framework should I use for the dashboard?
+>
+> [1. Next.js] [2. Remix] [3. Astro]
+> [✏️ Other (type answer)]
+
+Tap a button to answer, or tap **Other** to type a free-form response (the next message you send becomes the answer). Open-ended `clarify` calls (no preset choices) skip the buttons and just capture your next message.
+
+Configure the response timeout via `agent.clarify_timeout` in `~/.hermes/config.yaml` (default `600` seconds). If you don't respond within the timeout, the agent unblocks with a sentinel message and adapts rather than hanging.
 
 ## Security
 

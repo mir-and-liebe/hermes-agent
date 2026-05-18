@@ -160,7 +160,7 @@ def _normalize_profile(value: Any) -> Optional[str]:
     if value is None:
         return None
     text = str(value).strip()
-    if not text or text.lower() in ("none", "-", "null"):
+    if not text or text.lower() in {"none", "-", "null"}:
         return None
     return text
 
@@ -172,9 +172,9 @@ def _parse_bool_arg(args: dict, name: str, *, default: bool = False):
     if isinstance(value, bool):
         return value, None
     text = str(value).strip().lower()
-    if text in ("true", "1", "yes"):
+    if text in {"true", "1", "yes"}:
         return True, None
-    if text in ("false", "0", "no"):
+    if text in {"false", "0", "no"}:
         return False, None
     return default, f"{name} must be a boolean or 'true'/'false'"
 
@@ -371,6 +371,7 @@ def _handle_complete(args: dict, **kw) -> str:
     metadata = args.get("metadata")
     result = args.get("result")
     created_cards = args.get("created_cards")
+    artifacts = args.get("artifacts")
     if created_cards is not None:
         if isinstance(created_cards, str):
             # Accept a single id as a string for convenience.
@@ -384,6 +385,45 @@ def _handle_complete(args: dict, **kw) -> str:
         created_cards = [
             str(c).strip() for c in created_cards if str(c).strip()
         ]
+    if artifacts is not None:
+        if isinstance(artifacts, str):
+            # Accept a single path as a string for convenience.
+            artifacts = [artifacts]
+        if not isinstance(artifacts, (list, tuple)):
+            return tool_error(
+                f"artifacts must be a list of file paths, got "
+                f"{type(artifacts).__name__}"
+            )
+        artifacts = [
+            str(p).strip() for p in artifacts if str(p).strip()
+        ]
+        # Carry the artifact list inside metadata so it rides the
+        # existing completed-event payload without a schema change at
+        # the DB layer.  The gateway notifier reads payload['artifacts']
+        # off the completion event and uploads each path as a native
+        # attachment.
+        if artifacts:
+            if metadata is None:
+                metadata = {}
+            elif not isinstance(metadata, dict):
+                return tool_error(
+                    f"metadata must be an object/dict, got "
+                    f"{type(metadata).__name__}"
+                )
+            # Don't overwrite an existing metadata.artifacts the worker
+            # passed manually — merge instead.
+            existing = metadata.get("artifacts")
+            if isinstance(existing, (list, tuple)):
+                merged: list[str] = []
+                seen: set[str] = set()
+                for item in list(existing) + artifacts:
+                    s = str(item).strip()
+                    if s and s not in seen:
+                        seen.add(s)
+                        merged.append(s)
+                metadata["artifacts"] = merged
+            else:
+                metadata["artifacts"] = artifacts
     if not (summary or result):
         return tool_error(
             "provide at least one of: summary (preferred), result"
@@ -406,12 +446,21 @@ def _handle_complete(args: dict, **kw) -> str:
                 # Structured rejection — surface the phantom ids so the
                 # worker can retry with a corrected list or drop the
                 # field. Audit event already landed in the DB.
+                #
+                # The task itself was NOT mutated (the gate runs before
+                # the write txn), so the worker can simply call
+                # kanban_complete again. Spell that out — without it the
+                # model often interprets a tool_error as a terminal
+                # failure and either blocks or crashes the run instead
+                # of retrying. See #22923.
                 return tool_error(
                     f"kanban_complete blocked: the following created_cards "
                     f"do not exist or were not created by this worker: "
                     f"{', '.join(hall_err.phantom)}. "
-                    f"Either omit them, use only ids returned from successful "
-                    f"kanban_create calls, or remove the created_cards field."
+                    f"Your task is still in-flight (no state change). "
+                    f"Retry kanban_complete with the same summary/metadata "
+                    f"and either drop these ids from created_cards, or pass "
+                    f"created_cards=[] to skip the card-claim check entirely."
                 )
             if not ok:
                 return tool_error(
@@ -751,7 +800,12 @@ KANBAN_COMPLETE_SCHEMA = {
         "tasks via ``kanban_create`` during this run, list their ids "
         "in ``created_cards`` — the kernel verifies them so phantom "
         "references are caught before they leak into downstream "
-        "automation."
+        "automation. If you produced deliverable files (charts, PDFs, "
+        "spreadsheets, generated images), list their absolute paths "
+        "in ``artifacts`` — the gateway notifier will upload them as "
+        "native attachments to the human who subscribed to the task, "
+        "so the deliverable lands in their chat alongside the summary "
+        "instead of being a path they have to fetch by hand."
     ),
     "parameters": {
         "type": "object",
@@ -800,6 +854,25 @@ KANBAN_COMPLETE_SCHEMA = {
                     "``kanban_create`` call — do not invent or "
                     "remember ids from prose. Omit the field if you "
                     "did not create any cards."
+                ),
+            },
+            "artifacts": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Optional list of absolute paths to deliverable "
+                    "files you produced during this run — generated "
+                    "charts, PDFs, spreadsheets, images, archives. "
+                    "Examples: [\"/tmp/q3-revenue.png\", "
+                    "\"/tmp/report.pdf\"]. The gateway notifier "
+                    "uploads each path as a native attachment to the "
+                    "subscribed chat (images embed inline, everything "
+                    "else uploads as a file) so the deliverable "
+                    "lands with the completion notification. Skip "
+                    "intermediate scratch files and references that "
+                    "are not the deliverable. The path must exist "
+                    "on disk when the notifier runs; missing files "
+                    "are silently skipped."
                 ),
             },
         },

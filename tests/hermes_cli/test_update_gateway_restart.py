@@ -6,6 +6,7 @@ rather than leaving zombie processes or telling users to manually restart
 when launchd will auto-respawn.
 """
 
+import os
 import signal
 import subprocess
 from types import SimpleNamespace
@@ -35,6 +36,7 @@ def _no_restart_verify_sleep(monkeypatch):
     """
     import time as _real_time
     monkeypatch.setattr(_real_time, "sleep", lambda *_a, **_k: None)
+    monkeypatch.setattr(cli_main, "_refresh_active_lazy_features", lambda: None)
 
 
 # ---------------------------------------------------------------------------
@@ -178,8 +180,11 @@ class TestLaunchdPlistPath:
             raise AssertionError("PATH key not found in plist")
 
     def test_plist_path_includes_node_modules_bin(self):
+        node_bin_dir = gateway_cli.PROJECT_ROOT / "node_modules" / ".bin"
+        if not node_bin_dir.is_dir():
+            pytest.skip("node_modules/.bin not present in this checkout")
         plist = gateway_cli.generate_launchd_plist()
-        node_bin = str(gateway_cli.PROJECT_ROOT / "node_modules" / ".bin")
+        node_bin = str(node_bin_dir)
         lines = plist.splitlines()
         for i, line in enumerate(lines):
             if "<key>PATH</key>" in line.strip():
@@ -1071,13 +1076,18 @@ class TestFindGatewayPidsExclude:
 
     def test_excludes_specified_pids(self, monkeypatch):
         monkeypatch.setattr(gateway_cli, "is_windows", lambda: False)
+        # Bypass /proc scan so the subprocess (ps) fallback is used
+        _real_isdir = os.path.isdir
+        monkeypatch.setattr("os.path.isdir", lambda p: False if p == "/proc" else _real_isdir(p))
+        monkeypatch.setattr(gateway_cli, "_get_service_pids", lambda: set())
+        monkeypatch.setattr(gateway_cli, "_get_ancestor_pids", lambda: {999})
 
         def fake_run(cmd, **kwargs):
             return subprocess.CompletedProcess(
                 cmd, 0,
                 stdout=(
-                    "user  100  0.0  0.0  0  0  ?  S  00:00  0:00  python gateway/run.py\n"
-                    "user  200  0.0  0.0  0  0  ?  S  00:00  0:00  python gateway/run.py\n"
+                    "100 python gateway/run.py\n"
+                    "200 python gateway/run.py\n"
                 ),
                 stderr="",
             )
@@ -1085,19 +1095,24 @@ class TestFindGatewayPidsExclude:
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
         monkeypatch.setattr("os.getpid", lambda: 999)
 
-        pids = gateway_cli.find_gateway_pids(exclude_pids={100})
+        pids = gateway_cli.find_gateway_pids(exclude_pids={100}, all_profiles=True)
         assert 100 not in pids
         assert 200 in pids
 
     def test_no_exclude_returns_all(self, monkeypatch):
         monkeypatch.setattr(gateway_cli, "is_windows", lambda: False)
+        # Bypass /proc scan so the subprocess (ps) fallback is used
+        _real_isdir = os.path.isdir
+        monkeypatch.setattr("os.path.isdir", lambda p: False if p == "/proc" else _real_isdir(p))
+        monkeypatch.setattr(gateway_cli, "_get_service_pids", lambda: set())
+        monkeypatch.setattr(gateway_cli, "_get_ancestor_pids", lambda: {999})
 
         def fake_run(cmd, **kwargs):
             return subprocess.CompletedProcess(
                 cmd, 0,
                 stdout=(
-                    "user  100  0.0  0.0  0  0  ?  S  00:00  0:00  python gateway/run.py\n"
-                    "user  200  0.0  0.0  0  0  ?  S  00:00  0:00  python gateway/run.py\n"
+                    "100 python gateway/run.py\n"
+                    "200 python gateway/run.py\n"
                 ),
                 stderr="",
             )
@@ -1105,7 +1120,7 @@ class TestFindGatewayPidsExclude:
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
         monkeypatch.setattr("os.getpid", lambda: 999)
 
-        pids = gateway_cli.find_gateway_pids()
+        pids = gateway_cli.find_gateway_pids(all_profiles=True)
         assert 100 in pids
         assert 200 in pids
 
@@ -1114,6 +1129,10 @@ class TestFindGatewayPidsExclude:
         profile_dir.mkdir(parents=True)
         monkeypatch.setattr(gateway_cli, "is_windows", lambda: False)
         monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        # Bypass /proc scan so the subprocess (ps) fallback is used
+        _real_isdir = os.path.isdir
+        monkeypatch.setattr("os.path.isdir", lambda p: False if p == "/proc" else _real_isdir(p))
+        monkeypatch.setattr(gateway_cli, "_get_ancestor_pids", lambda: {999})
 
         def fake_run(cmd, **kwargs):
             return subprocess.CompletedProcess(
@@ -1441,8 +1460,15 @@ def _systemctl_calls(mock_run, subcommand):
     """Return every subprocess.run call that was `systemctl [--user] <subcommand>`."""
     out = []
     for call in mock_run.call_args_list:
+        if not call.args:
+            continue
         argv = call.args[0]
-        joined = " ".join(str(c) for c in argv)
+        if not isinstance(argv, (list, tuple)):
+            continue
+        parts = [c for c in argv if isinstance(c, str)]
+        if not any("systemctl" in c for c in parts):
+            continue
+        joined = " ".join(parts)
         if "systemctl" in joined and subcommand in joined:
             out.append(argv)
     return out
@@ -1508,7 +1534,12 @@ class TestCmdUpdateResetFailedBeforeRestart:
         first_reset_idx = None
         first_restart_idx = None
         for idx, call in enumerate(mock_run.call_args_list):
-            joined = " ".join(str(c) for c in call.args[0])
+            if not call.args or not isinstance(call.args[0], (list, tuple)):
+                continue
+            parts = [c for c in call.args[0] if isinstance(c, str)]
+            if not any("systemctl" in c for c in parts):
+                continue
+            joined = " ".join(parts)
             if "systemctl" in joined and "reset-failed" in joined and first_reset_idx is None:
                 first_reset_idx = idx
             if "systemctl" in joined and "restart" in joined and "hermes-gateway" in joined:
@@ -1540,9 +1571,12 @@ class TestCmdUpdateResetFailedBeforeRestart:
         # Using a state counter so both the initial check and the verify
         # loops behave realistically.
         is_active_calls = {"n": 0}
+        systemctl_commands = []
 
         def side_effect(cmd, **kwargs):
             joined = " ".join(str(c) for c in cmd)
+            if "systemctl" in joined:
+                systemctl_commands.append(list(cmd))
             if "rev-parse" in joined and "--abbrev-ref" in joined:
                 return subprocess.CompletedProcess(cmd, 0, stdout="main\n", stderr="")
             if "rev-parse" in joined and "--verify" in joined:
@@ -1579,8 +1613,8 @@ class TestCmdUpdateResetFailedBeforeRestart:
         with patch.object(gateway_cli, "find_gateway_pids", return_value=[]):
             cmd_update(mock_args)
 
-        reset_calls = _systemctl_calls(mock_run, "reset-failed")
-        restart_calls = _systemctl_calls(mock_run, "restart")
+        reset_calls = [cmd for cmd in systemctl_commands if "reset-failed" in cmd]
+        restart_calls = [cmd for cmd in systemctl_commands if "restart" in cmd]
 
         # Two restart attempts (initial + retry), two reset-failed calls.
         gateway_restarts = [

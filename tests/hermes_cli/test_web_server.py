@@ -327,6 +327,12 @@ class TestWebServerEndpoints:
         # Public endpoints should still work
         resp = unauth_client.get("/api/status")
         assert resp.status_code == 200
+        resp = unauth_client.get("/api/dashboard/plugins")
+        assert resp.status_code == 200
+        resp = unauth_client.get("/api/dashboard/plugins/rescan")
+        assert resp.status_code == 401
+        resp = self.client.get("/api/dashboard/plugins/rescan")
+        assert resp.status_code == 200
 
     def test_path_traversal_blocked(self):
         """Verify URL-encoded path traversal is blocked."""
@@ -2091,6 +2097,21 @@ class TestPtyWebSocket:
 
         q = {"token": tok, **params}
         return f"/api/pty?{urlencode(q)}"
+
+    def test_resolve_chat_argv_uses_dashboard_scroll_env(self, monkeypatch):
+        """Dashboard chat runs the TUI in browser-scrollback mode."""
+        import hermes_cli.main as main_mod
+
+        monkeypatch.setattr(
+            main_mod,
+            "_make_tui_argv",
+            lambda project_root, tui_dev=False: (["node", "dist/entry.js"], "/tmp/ui-tui"),
+        )
+
+        _argv, _cwd, env = self.ws_module._resolve_chat_argv()
+
+        assert env["HERMES_TUI_INLINE"] == "1"
+        assert env["HERMES_TUI_DISABLE_MOUSE"] == "1"
 
     def test_rejects_when_embedded_chat_disabled(self, monkeypatch):
         monkeypatch.setattr(self.ws_module, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", False)

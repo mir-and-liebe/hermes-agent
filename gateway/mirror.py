@@ -64,7 +64,6 @@ def mirror_to_session(
             "mirror_source": source_label,
         }
 
-        _append_to_jsonl(session_id, mirror_msg)
         _append_to_sqlite(session_id, mirror_msg)
 
         logger.debug("Mirror: wrote to session %s (from %s)", session_id, source_label)

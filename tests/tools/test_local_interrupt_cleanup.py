@@ -48,8 +48,14 @@ def _process_group_snapshot(pgid: int) -> str:
     ).stdout.strip()
 
 
-def _wait_for_pgid_exit(pgid: int, timeout: float = 10.0) -> bool:
-    """Wait for a process group to disappear under loaded xdist hosts."""
+def _wait_for_pgid_exit(pgid: int, timeout: float = 30.0) -> bool:
+    """Wait for a process group to disappear under loaded xdist hosts.
+
+    The cleanup chain is: SIGTERM → 3s TimeoutStopSec → SIGKILL → reap.
+    Under heavy xdist load (40 parallel workers, 6-shard CI), the full
+    sequence can exceed 10s. Default timeout is generous to avoid CI
+    flakes; in practice the wait returns in <1s on quiet hosts.
+    """
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if not _pgid_still_alive(pgid):

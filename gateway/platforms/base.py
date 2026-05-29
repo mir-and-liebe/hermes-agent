@@ -472,6 +472,7 @@ def is_host_excluded_by_no_proxy(hostname: str, no_proxy_value: str | None = Non
     return False
 
 
+import dataclasses
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -827,6 +828,15 @@ DOCUMENT_CACHE_DIR = get_hermes_dir("cache/documents", "document_cache")
 SCREENSHOT_CACHE_DIR = get_hermes_dir("cache/screenshots", "browser_screenshots")
 _HERMES_HOME = get_hermes_home()
 MEDIA_DELIVERY_ALLOW_DIRS_ENV = "HERMES_MEDIA_ALLOW_DIRS"
+MEDIA_DELIVERY_TRUST_RECENT_ENV = "HERMES_MEDIA_TRUST_RECENT_FILES"
+MEDIA_DELIVERY_TRUST_RECENT_SECONDS_ENV = "HERMES_MEDIA_TRUST_RECENT_SECONDS"
+# Strict mode toggles the original allowlist+recency path-validation behavior.
+# Off by default — symmetric with inbound (we accept any document type the
+# user uploads), and with the denylist still blocking obvious credential /
+# system paths. Operators running public-facing gateways where prompt
+# injection from one user could exfiltrate the host's secrets to that same
+# user should set this to true.
+MEDIA_DELIVERY_STRICT_ENV = "HERMES_MEDIA_DELIVERY_STRICT"
 MEDIA_DELIVERY_SAFE_ROOTS = (
     IMAGE_CACHE_DIR,
     AUDIO_CACHE_DIR,
@@ -838,6 +848,48 @@ MEDIA_DELIVERY_SAFE_ROOTS = (
     _HERMES_HOME / "video_cache",
     _HERMES_HOME / "document_cache",
     _HERMES_HOME / "browser_screenshots",
+)
+
+# Default recency window for trusting freshly-produced files (seconds).
+# The agent's actual work generally completes well inside 10 minutes; legitimate
+# build artifacts (PDFs from pandoc, plots from matplotlib, etc.) almost always
+# land seconds before delivery. Old system files (/etc/passwd, ~/.ssh/id_rsa,
+# stray credentials) have mtimes measured in days or months — well outside this
+# window — so prompt-injection paths pointing at pre-existing host files are
+# still rejected.
+_MEDIA_DELIVERY_TRUST_RECENT_DEFAULT_SECONDS = 600
+
+# Hard denylist applied even when a path would otherwise pass recency trust.
+# These prefixes hold credentials, system state, or process introspection that
+# should never be uploaded as a gateway attachment, regardless of how new the
+# file looks. The cache-dir allowlist still beats this — an operator-configured
+# allowed root can intentionally live under one of these prefixes (rare, but
+# their choice).
+_MEDIA_DELIVERY_DENIED_PREFIXES = (
+    "/etc",
+    "/proc",
+    "/sys",
+    "/dev",
+    "/root",
+    "/boot",
+    "/var/log",
+    "/var/lib",
+    "/var/run",
+)
+
+# Within $HOME we additionally deny common credential / config directories.
+# Resolved at check time against the live $HOME so containers and alt-home
+# setups work correctly.
+_MEDIA_DELIVERY_DENIED_HOME_SUBPATHS = (
+    ".ssh",
+    ".aws",
+    ".gnupg",
+    ".kube",
+    ".docker",
+    ".config",
+    ".azure",
+    ".gcloud",
+    "Library/Keychains",  # macOS
 )
 
 
@@ -856,6 +908,82 @@ def _media_delivery_allowed_roots() -> List[Path]:
     return roots
 
 
+def _media_delivery_recency_seconds() -> float:
+    """Return the recency window for trusting freshly-produced files.
+
+    0 disables recency-based trust entirely (pure-allowlist mode).
+    """
+    raw = os.environ.get(MEDIA_DELIVERY_TRUST_RECENT_ENV, "1").strip().lower()
+    if raw in ("0", "false", "no", "off", ""):
+        return 0.0
+    try:
+        custom = os.environ.get(MEDIA_DELIVERY_TRUST_RECENT_SECONDS_ENV, "").strip()
+        if custom:
+            seconds = float(custom)
+            return max(0.0, seconds)
+    except (TypeError, ValueError):
+        pass
+    return float(_MEDIA_DELIVERY_TRUST_RECENT_DEFAULT_SECONDS)
+
+
+def _media_delivery_strict_mode() -> bool:
+    """Return True when path validation should require allowlist/recency match.
+
+    Off by default. In non-strict mode, ``validate_media_delivery_path``
+    accepts any existing regular file that isn't under the credential /
+    system-path denylist — restoring the pre-#29523 behavior for the
+    single-user case. Strict mode preserves the original
+    allowlist+recency-window logic for operators running public-facing
+    gateways where prompt injection from one user shouldn't be able to
+    exfiltrate the host's secrets to that same user.
+    """
+    raw = os.environ.get(MEDIA_DELIVERY_STRICT_ENV, "0").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+
+def _media_delivery_denied_paths() -> List[Path]:
+    """Return absolute denylist paths under which delivery is never allowed."""
+    denied = [Path(p) for p in _MEDIA_DELIVERY_DENIED_PREFIXES]
+    home = Path(os.path.expanduser("~"))
+    for sub in _MEDIA_DELIVERY_DENIED_HOME_SUBPATHS:
+        denied.append(home / sub)
+    # The Hermes home itself contains credentials (auth.json, .env) — only the
+    # cache subdirectories under it are explicitly allowlisted above.
+    denied.append(_HERMES_HOME / ".env")
+    denied.append(_HERMES_HOME / "auth.json")
+    denied.append(_HERMES_HOME / "credentials")
+    return denied
+
+
+def _path_under_denied_prefix(resolved: Path) -> bool:
+    """Return True if ``resolved`` lives under a deny-listed system path."""
+    for denied in _media_delivery_denied_paths():
+        try:
+            resolved_denied = denied.expanduser().resolve(strict=False)
+        except (OSError, RuntimeError, ValueError):
+            continue
+        if _path_is_within(resolved, resolved_denied) or resolved == resolved_denied:
+            return True
+    return False
+
+
+def _file_is_recently_produced(resolved: Path, window_seconds: float) -> bool:
+    """Return True if the file's mtime is within ``window_seconds`` of now.
+
+    Used as a session-scoped trust signal: agents almost always produce
+    delivery artifacts within seconds of asking to send them, while
+    prompt-injection paths pointing at pre-existing host files (/etc/passwd,
+    ~/.ssh/id_rsa) have mtimes measured in days or months.
+    """
+    if window_seconds <= 0:
+        return False
+    try:
+        mtime = resolved.stat().st_mtime
+    except OSError:
+        return False
+    return (time.time() - mtime) <= window_seconds
+
+
 def _path_is_within(path: Path, root: Path) -> bool:
     try:
         path.relative_to(root)
@@ -867,10 +995,22 @@ def _path_is_within(path: Path, root: Path) -> bool:
 def validate_media_delivery_path(path: str) -> Optional[str]:
     """Return a safe absolute file path for native media delivery, else None.
 
-    MEDIA tags and bare local paths in model output are untrusted text. Only
-    existing regular files under Hermes-managed media caches, or roots the
-    operator explicitly allowlists, may be uploaded as native attachments.
-    Symlinks are resolved before the containment check.
+    Default mode (single-user / private gateway): accept any existing regular
+    file that isn't under the credential / system-path denylist
+    (``_MEDIA_DELIVERY_DENIED_PREFIXES`` + ``~/.ssh``, ``~/.aws``, etc.).
+    This matches the symmetry of inbound delivery — Telegram/Discord/Slack
+    will hand the agent any file the user uploads, and the agent can hand
+    back any file that isn't a credential.
+
+    Strict mode (opt-in via ``gateway.strict`` in ``config.yaml`` or
+    ``HERMES_MEDIA_DELIVERY_STRICT=1``): the file MUST live under a
+    Hermes-managed cache, under an operator-allowlisted root
+    (``HERMES_MEDIA_ALLOW_DIRS``), or be freshly produced inside the
+    configured recency window. Suitable for public-facing bots where
+    prompt injection from one user shouldn't be able to exfiltrate the
+    host's secrets to that same user.
+
+    Symlinks are resolved before any containment / denylist check.
     """
     if not path:
         return None
@@ -894,12 +1034,33 @@ def validate_media_delivery_path(path: str) -> Optional[str]:
     if not resolved.is_file():
         return None
 
+    # Cache / operator allowlist is always honored — these are unconditionally
+    # trusted regardless of mode.
     for root in _media_delivery_allowed_roots():
         try:
             resolved_root = root.expanduser().resolve(strict=False)
         except (OSError, RuntimeError, ValueError):
             continue
         if _path_is_within(resolved, resolved_root):
+            return str(resolved)
+
+    # Non-strict mode (default): accept anything not on the denylist.
+    # The denylist still blocks /etc, /proc, ~/.ssh, ~/.aws, ~/.hermes/.env,
+    # ~/.hermes/auth.json, etc. — so the obvious prompt-injection sites
+    # (``MEDIA:/etc/passwd``, ``MEDIA:~/.ssh/id_rsa``) remain rejected.
+    if not _media_delivery_strict_mode():
+        if _path_under_denied_prefix(resolved):
+            return None
+        return str(resolved)
+
+    # Strict mode: fall back to recency-based trust for freshly-produced
+    # files (e.g. ``pandoc -o /tmp/report.pdf`` or
+    # ``write_file("/home/user/report.pdf", ...)``). System paths and
+    # credential locations remain blocked even when "recent" — see
+    # ``_MEDIA_DELIVERY_DENIED_PREFIXES`` for the denylist.
+    window = _media_delivery_recency_seconds()
+    if window > 0 and not _path_under_denied_prefix(resolved):
+        if _file_is_recently_produced(resolved, window):
             return str(resolved)
 
     return None
@@ -1401,6 +1562,10 @@ class BasePlatformAdapter(ABC):
         self.config = config
         self.platform = platform
         self._message_handler: Optional[MessageHandler] = None
+        # Optional hook (e.g. Telegram DM topic recovery) that rewrites
+        # ``event.source.thread_id`` before session keying. Returns the
+        # corrected thread_id or None to leave the source untouched.
+        self._topic_recovery_fn: Optional[Callable[[Any], Optional[str]]] = None
         self._running = False
         self._fatal_error_code: Optional[str] = None
         self._fatal_error_message: Optional[str] = None
@@ -1655,6 +1820,40 @@ class BasePlatformAdapter(ABC):
         an optional response string.
         """
         self._message_handler = handler
+
+    def set_topic_recovery_fn(
+        self,
+        fn: Optional[Callable[[Any], Optional[str]]],
+    ) -> None:
+        """Install a thread_id-recovery hook (Telegram DM topic mode).
+
+        The hook is called with ``event.source`` before session keying;
+        a non-None return value replaces ``source.thread_id``. Pass
+        ``None`` to clear the hook.
+        """
+        # Guard against subclasses that initialize via ``object.__new__`` in
+        # tests and never run ``BasePlatformAdapter.__init__``.
+        self._topic_recovery_fn = fn  # type: ignore[attr-defined]
+
+    def _apply_topic_recovery(self, event: MessageEvent) -> None:
+        """Rewrite ``event.source.thread_id`` in place if the hook returns one."""
+        recover = getattr(self, "_topic_recovery_fn", None)
+        if recover is None:
+            return
+        source = getattr(event, "source", None)
+        if source is None:
+            return
+        try:
+            recovered = recover(source)
+        except Exception:
+            logger.debug("topic recovery hook failed", exc_info=True)
+            return
+        if recovered is None or str(recovered) == str(source.thread_id or ""):
+            return
+        try:
+            event.source = dataclasses.replace(source, thread_id=str(recovered))
+        except Exception:
+            logger.debug("topic recovery rewrite failed", exc_info=True)
 
     def set_busy_session_handler(self, handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]]) -> None:
         """Set an optional handler for messages arriving during active sessions."""
@@ -3172,7 +3371,12 @@ class BasePlatformAdapter(ABC):
             return
 
         coerce_plaintext_gateway_command(event)
-        
+
+        # Rewrite ``event.source.thread_id`` via the installed recovery hook
+        # (Telegram DM topic mode) so the session key, guard checks, and
+        # downstream delivery all agree on the same lane.
+        self._apply_topic_recovery(event)
+
         session_key = build_session_key(
             event.source,
             group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),

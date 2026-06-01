@@ -34,7 +34,7 @@ import tempfile
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any, List, Optional, Tuple
+from typing import Any, Optional, Tuple
 
 from agent.context_checkpoint import (
     ContextCheckpointMetadata,
@@ -364,10 +364,48 @@ def compress_context(
     _lock_db = getattr(agent, "_session_db", None)
     _lock_sid = agent.session_id or ""
     _lock_holder: Optional[str] = None
+    # Probe whether the lock subsystem is actually available on this
+    # SessionDB instance.  A process running mismatched module versions
+    # (e.g. ``conversation_compression.py`` reloaded after a pull but the
+    # long-lived ``hermes_state.SessionDB`` class still bound to the
+    # pre-#34351 version in memory) has the call site but not the method.
+    # In that case ``try_acquire_compression_lock`` raises AttributeError —
+    # NOT a ``sqlite3.Error`` — so the method's own fail-open guard never
+    # runs and the exception propagates to the outer agent loop, which
+    # prints the error and retries.  Because compression never succeeds,
+    # the token count never drops and the loop re-triggers compaction
+    # forever (the "API call #47/#48/#49 ... has no attribute
+    # try_acquire_compression_lock" spin).  Fail OPEN here: if the lock
+    # subsystem is missing or broken in any unexpected way, skip locking
+    # and proceed with compression.  Skipping the lock risks a rare
+    # concurrent-compression session fork; an infinite no-progress loop
+    # that never compresses at all is strictly worse.
     if _lock_db is not None and _lock_sid:
         _lock_holder = _compression_lock_holder(agent)
-        if not _lock_db.try_acquire_compression_lock(_lock_sid, _lock_holder):
-            existing = _lock_db.get_compression_lock_holder(_lock_sid)
+        try:
+            _lock_acquired = _lock_db.try_acquire_compression_lock(
+                _lock_sid, _lock_holder
+            )
+        except Exception as _lock_err:
+            # Broken/absent lock subsystem (version skew, etc.).  Log once
+            # per session and proceed WITHOUT the lock rather than letting
+            # the exception spin the outer loop.
+            _lock_holder = None  # we don't own anything to release
+            if getattr(agent, "_last_compression_lock_error_sid", None) != _lock_sid:
+                agent._last_compression_lock_error_sid = _lock_sid
+                logger.warning(
+                    "compression lock subsystem unavailable for session=%s "
+                    "(%s: %s) — proceeding without lock. This usually means a "
+                    "stale in-memory module after an update; restart the "
+                    "process (or `hermes update`) to resync.",
+                    _lock_sid, type(_lock_err).__name__, _lock_err,
+                )
+            _lock_acquired = True  # treat as acquired-but-unlocked; proceed
+        if not _lock_acquired:
+            try:
+                existing = _lock_db.get_compression_lock_holder(_lock_sid)
+            except Exception:
+                existing = None
             logger.warning(
                 "compression skipped: another path is compressing session=%s "
                 "(holder=%s) — returning messages unchanged to avoid session fork",
@@ -593,19 +631,18 @@ def compress_context(
             force=True,
         )
 
-    # Update token estimate after compaction so pressure calculations
-    # use the post-compression count, not the stale pre-compression one.
-    # Use estimate_request_tokens_rough() so tool schemas are included —
-    # with 50+ tools enabled, schemas alone can add 20-30K tokens, and
-    # omitting them delays the next compression cycle far past the
-    # configured threshold (issue #14695).
+    # Keep the post-compression rough estimate for diagnostics, but do not
+    # treat it as provider-reported prompt usage. Schema-heavy rough estimates
+    # can remain above threshold even after the next real API request fits.
     _compressed_est = estimate_request_tokens_rough(
         compressed,
         system_prompt=new_system_prompt or "",
         tools=agent.tools or None,
     )
-    agent.context_compressor.last_prompt_tokens = _compressed_est
+    agent.context_compressor.last_compression_rough_tokens = _compressed_est
+    agent.context_compressor.last_prompt_tokens = -1
     agent.context_compressor.last_completion_tokens = 0
+    agent.context_compressor.awaiting_real_usage_after_compression = True
 
     if checkpoint_path is not None and _checkpoint_metadata is not None:
         try:
@@ -631,7 +668,7 @@ def compress_context(
         pass
 
     logger.info(
-        "context compression done: session=%s messages=%d->%d tokens=~%s",
+        "context compression done: session=%s messages=%d->%d rough_tokens=~%s awaiting_real_usage=true",
         agent.session_id or "none", _pre_msg_count, len(compressed),
         f"{_compressed_est:,}",
     )
@@ -677,6 +714,12 @@ def try_shrink_image_parts_in_messages(api_messages: list) -> bool:
     # after a confirmed provider rejection, so the alternative is failure.
     target_bytes = 4 * 1024 * 1024
     changed_count = 0
+    # Track parts that are over the target but could NOT be shrunk under it.
+    # If any survive, retrying is pointless — the same oversized payload will
+    # be re-sent and rejected again, wasting the single retry budget.  We only
+    # report success (caller retries) when every over-threshold image was
+    # actually brought under the target.
+    unshrinkable_oversized = 0
 
     def _shrink_data_url(url: str) -> Optional[str]:
         """Return a smaller data URL, or None if shrink can't help."""
@@ -743,17 +786,34 @@ def try_shrink_image_parts_in_messages(api_messages: list) -> bool:
                 if resized:
                     image_value["url"] = resized
                     changed_count += 1
+                elif isinstance(url, str) and url.startswith("data:") \
+                        and len(url) > target_bytes:
+                    unshrinkable_oversized += 1
             elif isinstance(image_value, str):
                 resized = _shrink_data_url(image_value)
                 if resized:
                     part["image_url"] = resized
                     changed_count += 1
+                elif image_value.startswith("data:") \
+                        and len(image_value) > target_bytes:
+                    unshrinkable_oversized += 1
 
     if changed_count:
         logger.info(
             "image-shrink recovery: re-encoded %d image part(s) to fit under %.0f MB",
             changed_count, target_bytes / (1024 * 1024),
         )
+    if unshrinkable_oversized:
+        # At least one oversized image could not be shrunk under the target.
+        # Retrying would re-send it and fail identically, so signal "no
+        # progress" even if other parts shrank — the caller will surface the
+        # original error rather than burning its single retry on a no-op.
+        logger.warning(
+            "image-shrink recovery: %d oversized image part(s) could not be "
+            "shrunk under %.0f MB — not retrying (would re-send rejected payload)",
+            unshrinkable_oversized, target_bytes / (1024 * 1024),
+        )
+        return False
     return changed_count > 0
 
 

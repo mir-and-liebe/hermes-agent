@@ -96,6 +96,7 @@ def test_kill_process_uses_cached_pgid_if_wrapper_already_exited(monkeypatch):
     assert killpg_calls == [(67890, signal.SIGTERM), (67890, 0)]
 
 
+@pytest.mark.live_system_guard_bypass
 def test_wait_for_process_kills_subprocess_on_keyboardinterrupt(monkeypatch):
     """Exception exit inside the wait loop kills the subprocess group before re-raising."""
     env = LocalEnvironment(cwd="/tmp")

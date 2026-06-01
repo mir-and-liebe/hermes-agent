@@ -4,8 +4,6 @@ import json
 import logging
 import os
 import pytest
-from pathlib import Path
-from unittest.mock import patch
 
 from agent.failure_policy import get_failure_counts, reset_failure_counts_for_tests
 
@@ -188,7 +186,7 @@ class TestSkinManagement:
 
 class TestUserSkins:
     def test_load_user_skin_from_yaml(self, tmp_path, monkeypatch):
-        from hermes_cli.skin_engine import load_skin, _skins_dir
+        from hermes_cli.skin_engine import load_skin
         # Create a user skin YAML
         skins_dir = tmp_path / "skins"
         skins_dir.mkdir()

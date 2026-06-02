@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import time
 import uuid
 
@@ -115,7 +116,13 @@ def _copy_worktreeinclude_entries(repo_root: Path, wt_path: Path) -> None:
                 shutil.copy2(str(src), str(dst))
             elif src.is_dir() and not dst.exists():
                 dst.parent.mkdir(parents=True, exist_ok=True)
-                os.symlink(str(src_resolved), str(dst))
+                try:
+                    os.symlink(str(src_resolved), str(dst))
+                except (OSError, NotImplementedError):
+                    if sys.platform == "win32":
+                        shutil.copytree(str(src_resolved), str(dst))
+                    else:
+                        raise
     except Exception as exc:
         logger.debug("Error copying .worktreeinclude entries: %s", exc)
 

@@ -1232,7 +1232,7 @@ class AIAgent:
             raw = api_kwargs.get(key)
             try:
                 value = int(raw)
-            except (TypeError, ValueError):
+            except (TypeError, ValueError):  # hermes-ok-silent: ignore invalid token-cap candidates while scanning fallback keys
                 continue
             if value > 0:
                 return value

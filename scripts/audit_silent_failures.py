@@ -142,7 +142,7 @@ def _finding_key(finding: dict[str, object]) -> tuple[str, str, str]:
 
 
 def _load_baseline(path: Path) -> set[tuple[str, str, str]]:
-    data = json.loads(path.read_text())
+    data = json.loads(path.read_text(encoding="utf-8"))
     raw = data.get("findings", data if isinstance(data, list) else [])
     return {_finding_key(item) for item in raw}
 
@@ -159,7 +159,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     findings = audit_paths(paths)
 
     if args.write_baseline:
-        Path(args.write_baseline).write_text(json.dumps({"findings": findings}, indent=2, sort_keys=True) + "\n")
+        Path(args.write_baseline).write_text(
+            json.dumps({"findings": findings}, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
         print(json.dumps({"baseline_written": args.write_baseline, "findings": len(findings)}, sort_keys=True))
         return 0
 

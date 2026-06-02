@@ -52,6 +52,20 @@ logger = logging.getLogger(__name__)
 _MAX_TOOL_WORKERS = 8
 
 
+def _tool_result_content_for_agent(agent, tool_name: str, result):
+    """Normalize tool result content when the agent implementation supports it.
+
+    Some focused tests use minimal agent stubs that intentionally omit the
+    multimodal-normalization helper. Those stubs only exercise plain text tool
+    execution, so fall back to the original result while real ``AIAgent``
+    instances keep the provider-aware conversion path.
+    """
+    normalizer = getattr(agent, "_tool_result_content_for_active_model", None)
+    if callable(normalizer):
+        return normalizer(tool_name, result)
+    return result
+
+
 def _ra():
     """Lazy reference to ``run_agent`` so patches like ``run_agent._set_interrupt`` work."""
     import run_agent
@@ -516,7 +530,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         # Text-only servers get a string-safe fallback here so a rejected
         # image tool result never poisons canonical session history.
         # String results pass through unchanged.
-        _tool_content = agent._tool_result_content_for_active_model(name, function_result)
+        _tool_content = _tool_result_content_for_agent(agent, name, function_result)
         messages.append(make_tool_result_message(name, _tool_content, tc.id))
 
         # ── Per-tool /steer drain ───────────────────────────────────
@@ -963,7 +977,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
 
         # Unwrap _multimodal dicts to an OpenAI-style content list
         # (see parallel path for rationale). String results pass through.
-        _tool_content = agent._tool_result_content_for_active_model(function_name, function_result)
+        _tool_content = _tool_result_content_for_agent(agent, function_name, function_result)
         messages.append(make_tool_result_message(function_name, _tool_content, tool_call.id))
 
         # ── Per-tool /steer drain ───────────────────────────────────

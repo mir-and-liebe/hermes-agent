@@ -4,7 +4,7 @@
 #
 # What this script enforces:
 #   * Per-file isolation via scripts/run_tests_parallel.py — each test
-#     file runs in its own freshly-spawned `python -m pytest <file>`
+#     file runs in its own freshly-spawned pytest subprocess
 #     subprocess. No xdist, no shared workers, no module-level leakage
 #     between files.
 #   * TZ=UTC, LANG=C.UTF-8, PYTHONHASHSEED=0 (deterministic)

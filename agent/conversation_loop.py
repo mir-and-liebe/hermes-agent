@@ -130,7 +130,16 @@ def _nous_entitlement_message(capability: str) -> str:
             capability=capability,
         )
         return message or ""
-    except Exception:
+    except Exception as exc:
+        from agent.failure_policy import degraded
+
+        degraded(
+            component="agent.nous_account",
+            operation="format_entitlement_guidance",
+            exc=exc,
+            user_visible_effect="Nous entitlement guidance unavailable; using provider fallback messaging",
+            capability=capability,
+        )
         return ""
 
 
@@ -211,7 +220,15 @@ def _try_refresh_nous_paid_entitlement_credentials(agent) -> bool:
         return agent._try_refresh_nous_client_credentials(
             force=True,
         )
-    except Exception:
+    except Exception as exc:
+        from agent.failure_policy import degraded
+
+        degraded(
+            component="agent.nous_account",
+            operation="refresh_paid_entitlement_credentials",
+            exc=exc,
+            user_visible_effect="paid entitlement credential refresh unavailable; keeping existing credentials",
+        )
         return False
 
 

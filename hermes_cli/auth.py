@@ -3301,6 +3301,7 @@ def _read_codex_tokens(*, _lock: bool = True) -> Dict[str, Any]:
                 },
                 "last_refresh": pool_entry.get("last_refresh"),
                 "auth_mode": "chatgpt",
+                "source": "credential_pool",
             }
         else:
             raise AuthError(
@@ -3336,6 +3337,7 @@ def _read_codex_tokens(*, _lock: bool = True) -> Dict[str, Any]:
     return {
         "tokens": tokens,
         "last_refresh": state.get("last_refresh"),
+        "source": state.get("source") or "hermes-auth-store",
     }
 
 
@@ -3675,7 +3677,7 @@ def resolve_codex_runtime_credentials(
         "provider": "openai-codex",
         "base_url": base_url,
         "api_key": access_token,
-        "source": "hermes-auth-store",
+        "source": data.get("source") or "hermes-auth-store",
         "last_refresh": data.get("last_refresh"),
         "auth_mode": "chatgpt",
     }

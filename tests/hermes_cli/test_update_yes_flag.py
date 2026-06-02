@@ -134,7 +134,7 @@ class TestUpdateYesConfigMigration:
         with patch("builtins.input", return_value="n") as mock_input, patch.object(
             _sys.stdin, "isatty", return_value=True
         ), patch.object(_sys.stdout, "isatty", return_value=True):
-            cmd_update(args)
+            main_module.cmd_update(args)
             # The user was actually prompted.
             assert mock_input.called
             prompts = [c.args[0] if c.args else "" for c in mock_input.call_args_list]

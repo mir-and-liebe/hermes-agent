@@ -20,6 +20,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from tools.environments import local as local_mod
 from tools.environments.local import LocalEnvironment
 
 
@@ -99,6 +100,78 @@ def test_kill_process_uses_cached_pgid_if_wrapper_already_exited(monkeypatch):
 @pytest.mark.live_system_guard_bypass
 def test_wait_for_process_kills_subprocess_on_keyboardinterrupt(monkeypatch):
     """Exception exit inside the wait loop kills the subprocess group before re-raising."""
+    env = LocalEnvironment(cwd="/tmp")
+    proc = None
+    original_poll = None
+    try:
+        proc = env._run_bash("sleep 30", timeout=60)
+        pgid = os.getpgid(proc.pid)
+        assert _pgid_still_alive(pgid), "sanity: subprocess should be alive"
+
+        original_poll = proc.poll
+        kill_calls = []
+        original_kill_process = env._kill_process
+
+        def kill_spy(process):
+            kill_calls.append(process.pid)
+            return original_kill_process(process)
+
+        monkeypatch.setattr(env, "_kill_process", kill_spy)
+        main_tid = threading.current_thread().ident
+        poll_calls = {"count": 0}
+
+        def fake_poll():
+            poll_calls["count"] += 1
+            if poll_calls["count"] == 3:
+                if threading.current_thread().ident == main_tid:
+                    raise KeyboardInterrupt("timeout test")
+            return original_poll()
+
+        proc.poll = fake_poll
+
+        with pytest.raises(KeyboardInterrupt, match="timeout test"):
+            env._wait_for_process(proc)
+
+        assert kill_calls == [proc.pid], (
+            "KeyboardInterrupt should have triggered _kill_process"
+        )
+        # The process should now be dead
+        time.sleep(0.5)
+        assert not _pgid_still_alive(pgid), "subprocess should be cleaned up"
+    finally:
+        if proc and original_poll:
+            proc.poll = original_poll
+        if proc and _pgid_still_alive(os.getpgid(proc.pid)):
+            try:
+                env._kill_process(proc)
+            except Exception:
+                pass
+
+
+def test_kill_process_uses_windows_tree_kill(monkeypatch):
+    """Windows must kill the whole Bash process tree, not just the wrapper."""
+    env = object.__new__(LocalEnvironment)
+    terminate_calls = []
+    waits = []
+    killed = []
+
+    def fake_terminate(pid, *, force=False):
+        terminate_calls.append((pid, force))
+
+    proc = SimpleNamespace(
+        pid=12345,
+        kill=lambda: killed.append(True),
+        wait=lambda timeout=None: waits.append(timeout),
+    )
+
+    monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+    monkeypatch.setattr("gateway.status.terminate_pid", fake_terminate)
+
+    env._kill_process(proc)
+
+    assert terminate_calls == [(12345, True)]
+    assert waits == [2.0]
+    assert killed == []
     env = LocalEnvironment(cwd="/tmp")
     proc = None
     original_poll = None

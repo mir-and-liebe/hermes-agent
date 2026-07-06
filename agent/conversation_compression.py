@@ -968,64 +968,20 @@ def compress_context(
             agent._compression_warning = _cc_msg
             agent._emit_status(_cc_msg)
 
-    # Checkpoint functionality (Mir's custom)
-    if checkpoint_path is not None and _checkpoint_metadata is not None:
-        try:
-            _summary_text = getattr(agent.context_compressor, "last_summary_text", None)
-            _checkpoint_content = render_context_checkpoint(
-                _checkpoint_messages,
-                _checkpoint_metadata,
-                summary_text=_summary_text,
-                new_session_id=agent.session_id or None,
-                estimated_tokens_after=_compressed_est,
-            )
-            checkpoint_path.write_text(_checkpoint_content, encoding="utf-8")
-        except Exception as _checkpoint_err:
-            logger.warning("Context checkpoint enrichment failed after compression: %s", _checkpoint_err)
-
-    # Clear the file-read dedup cache.  After compression the original
-    # read content is summarised away — if the model re-reads the same
-    # file it needs the full content, not a "file unchanged" stub.
-    try:
-        from tools.file_tools import reset_file_dedup
-        reset_file_dedup(task_id)
-    except Exception:
-        pass
-
-    # Emit session:compress event so hooks (e.g. MemPalace sync) can ingest
-    # the completed old session before its details are lost. In in-place mode
-    # there is no old id (same session); ``in_place=True`` tells hooks the
-    # transcript was compacted on the same id rather than rotated.
-    if getattr(agent, "event_callback", None):
-        try:
-            agent.event_callback("session:compress", {
-                "platform": agent.platform or "",
-                "session_id": agent.session_id,
-                "old_session_id": _old_sid or "",
-                "in_place": in_place,
-                "compression_count": agent.context_compressor.compression_count,
-            })
-        except Exception as e:
-            logger.debug("event_callback error on session:compress: %s", e)
-
-        # Surface the compaction mode to the caller (run_conversation / gateway)
-        # via a rotation-independent flag. The gateway uses this — NOT an
-        # id-change diff — to re-baseline transcript handling (history_offset=0 +
-        # rewrite on the same id) when compaction happened in place. See #38763.
-        agent._last_compaction_in_place = compacted_in_place
-
-        # Keep the post-compression rough estimate for diagnostics, but do not
-        # treat it as provider-reported prompt usage. Schema-heavy rough estimates
-        # can remain above threshold even after the next real API request fits.
-        _compressed_est = estimate_request_tokens_rough(
-            compressed,
-            system_prompt=new_system_prompt or "",
-            tools=agent.tools or None,
-        )
-        agent.context_compressor.last_compression_rough_tokens = _compressed_est
-        agent.context_compressor.last_prompt_tokens = -1
-        agent.context_compressor.last_completion_tokens = 0
-        agent.context_compressor.awaiting_real_usage_after_compression = True
+        # Checkpoint functionality (Mir's custom)
+        if checkpoint_path is not None and _checkpoint_metadata is not None:
+            try:
+                _summary_text = getattr(agent.context_compressor, "last_summary_text", None)
+                _checkpoint_content = render_context_checkpoint(
+                    _checkpoint_messages,
+                    _checkpoint_metadata,
+                    summary_text=_summary_text,
+                    new_session_id=agent.session_id or None,
+                    estimated_tokens_after=_compressed_est,
+                )
+                checkpoint_path.write_text(_checkpoint_content, encoding="utf-8")
+            except Exception as _checkpoint_err:
+                logger.warning("Context checkpoint enrichment failed after compression: %s", _checkpoint_err)
 
         # Clear the file-read dedup cache.  After compression the original
         # read content is summarised away — if the model re-reads the same
@@ -1036,12 +992,56 @@ def compress_context(
         except Exception:
             pass
 
-        logger.info(
-            "context compression done: session=%s messages=%d->%d rough_tokens=~%s awaiting_real_usage=true",
-            agent.session_id or "none", _pre_msg_count, len(compressed),
-            f"{_compressed_est:,}",
-        )
-        return compressed, new_system_prompt
+        # Emit session:compress event so hooks (e.g. MemPalace sync) can ingest
+        # the completed old session before its details are lost. In in-place mode
+        # there is no old id (same session); ``in_place=True`` tells hooks the
+        # transcript was compacted on the same id rather than rotated.
+        if getattr(agent, "event_callback", None):
+            try:
+                agent.event_callback("session:compress", {
+                    "platform": agent.platform or "",
+                    "session_id": agent.session_id,
+                    "old_session_id": _old_sid or "",
+                    "in_place": in_place,
+                    "compression_count": agent.context_compressor.compression_count,
+                })
+            except Exception as e:
+                logger.debug("event_callback error on session:compress: %s", e)
+
+            # Surface the compaction mode to the caller (run_conversation / gateway)
+            # via a rotation-independent flag. The gateway uses this — NOT an
+            # id-change diff — to re-baseline transcript handling (history_offset=0 +
+            # rewrite on the same id) when compaction happened in place. See #38763.
+            agent._last_compaction_in_place = compacted_in_place
+
+            # Keep the post-compression rough estimate for diagnostics, but do not
+            # treat it as provider-reported prompt usage. Schema-heavy rough estimates
+            # can remain above threshold even after the next real API request fits.
+            _compressed_est = estimate_request_tokens_rough(
+                compressed,
+                system_prompt=new_system_prompt or "",
+                tools=agent.tools or None,
+            )
+            agent.context_compressor.last_compression_rough_tokens = _compressed_est
+            agent.context_compressor.last_prompt_tokens = -1
+            agent.context_compressor.last_completion_tokens = 0
+            agent.context_compressor.awaiting_real_usage_after_compression = True
+
+            # Clear the file-read dedup cache.  After compression the original
+            # read content is summarised away — if the model re-reads the same
+            # file it needs the full content, not a "file unchanged" stub.
+            try:
+                from tools.file_tools import reset_file_dedup
+                reset_file_dedup(task_id)
+            except Exception:
+                pass
+
+            logger.info(
+                "context compression done: session=%s messages=%d->%d rough_tokens=~%s awaiting_real_usage=true",
+                agent.session_id or "none", _pre_msg_count, len(compressed),
+                f"{_compressed_est:,}",
+            )
+            return compressed, new_system_prompt
     finally:
         # Release the lock on the OLD session_id only AFTER rotation completed
         # and all post-rotation bookkeeping (memory manager, context engine,

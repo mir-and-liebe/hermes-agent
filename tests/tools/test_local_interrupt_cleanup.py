@@ -49,7 +49,7 @@ def _process_group_snapshot(pgid: int) -> str:
     ).stdout.strip()
 
 
-def _wait_for_pgid_exit(pgid: int, timeout: float = 30.0) -> bool:
+def _wait_for_pgid_exit(pgid: int, timeout: float = 60.0) -> bool:
     """Wait for a process group to disappear under loaded xdist hosts.
 
     The cleanup chain is: SIGTERM → 3s TimeoutStopSec → SIGKILL → reap.
@@ -172,6 +172,10 @@ def test_kill_process_uses_windows_tree_kill(monkeypatch):
     assert terminate_calls == [(12345, True)]
     assert waits == [2.0]
     assert killed == []
+
+
+def test_wait_for_process_kills_subprocess_on_systemexit(monkeypatch):
+    """Exception exit via SystemExit inside the wait loop kills the subprocess group before re-raising."""
     env = LocalEnvironment(cwd="/tmp")
     proc = None
     original_poll = None

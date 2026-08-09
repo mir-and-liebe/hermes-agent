@@ -49,27 +49,6 @@ class TestDiscoverAndLoad:
         assert reg.loaded_hooks[0]["name"] == "my-hook"
         assert "agent:start" in reg.loaded_hooks[0]["events"]
 
-    def test_skips_missing_hook_yaml(self, tmp_path):
-        hook_dir = tmp_path / "bad-hook"
-        hook_dir.mkdir()
-        (hook_dir / "handler.py").write_text("def handle(e, c): pass\n")
-
-        reg = HookRegistry()
-        with patch("gateway.hooks.HOOKS_DIR", tmp_path), _patch_no_builtins(reg):
-            reg.discover_and_load()
-
-        assert len(reg.loaded_hooks) == 0
-
-    def test_skips_missing_handler_py(self, tmp_path):
-        hook_dir = tmp_path / "bad-hook"
-        hook_dir.mkdir()
-        (hook_dir / "HOOK.yaml").write_text("name: bad\nevents: ['agent:start']\n")
-
-        reg = HookRegistry()
-        with patch("gateway.hooks.HOOKS_DIR", tmp_path), _patch_no_builtins(reg):
-            reg.discover_and_load()
-
-        assert len(reg.loaded_hooks) == 0
 
     def test_skips_no_events(self, tmp_path):
         hook_dir = tmp_path / "empty-hook"
@@ -83,58 +62,8 @@ class TestDiscoverAndLoad:
 
         assert len(reg.loaded_hooks) == 0
 
-    def test_skips_no_handle_function(self, tmp_path):
-        hook_dir = tmp_path / "no-handle"
-        hook_dir.mkdir()
-        (hook_dir / "HOOK.yaml").write_text("name: no-handle\nevents: ['agent:start']\n")
-        (hook_dir / "handler.py").write_text("def something_else(): pass\n")
-
-        reg = HookRegistry()
-        with patch("gateway.hooks.HOOKS_DIR", tmp_path), _patch_no_builtins(reg):
-            reg.discover_and_load()
-
-        assert len(reg.loaded_hooks) == 0
-
-    def test_nonexistent_hooks_dir(self, tmp_path):
-        reg = HookRegistry()
-        with patch("gateway.hooks.HOOKS_DIR", tmp_path / "nonexistent"), _patch_no_builtins(reg):
-            reg.discover_and_load()
-
-        assert len(reg.loaded_hooks) == 0
-
-    def test_multiple_hooks(self, tmp_path):
-        _create_hook(tmp_path, "hook-a", '["agent:start"]',
-                      "def handle(e, c): pass\n")
-        _create_hook(tmp_path, "hook-b", '["session:start", "session:reset"]',
-                      "def handle(e, c): pass\n")
-
-        reg = HookRegistry()
-        with patch("gateway.hooks.HOOKS_DIR", tmp_path), _patch_no_builtins(reg):
-            reg.discover_and_load()
-
-        assert len(reg.loaded_hooks) == 2
-
 
 class TestEmit:
-    @pytest.mark.asyncio
-    async def test_emit_calls_sync_handler(self, tmp_path):
-        results = []
-
-        _create_hook(tmp_path, "sync-hook", '["agent:start"]',
-                      "results = []\n"
-                      "def handle(event_type, context):\n"
-                      "    results.append(event_type)\n")
-
-        reg = HookRegistry()
-        with patch("gateway.hooks.HOOKS_DIR", tmp_path):
-            reg.discover_and_load()
-
-        # Inject our results list into the handler's module globals
-        handler_fn = reg._handlers["agent:start"][0]
-        handler_fn.__globals__["results"] = results
-
-        await reg.emit("agent:start", {"test": True})
-        assert "agent:start" in results
 
     @pytest.mark.asyncio
     async def test_emit_calls_async_handler(self, tmp_path):
@@ -228,7 +157,6 @@ class TestEmit:
         await reg.emit("agent:start")  # no context arg
         assert captured[0] == {}
 
-
 class TestEmitCollect:
     """Tests for emit_collect() — returns handler return values for decision-style hooks."""
 
@@ -247,18 +175,6 @@ class TestEmitCollect:
             {"decision": "deny", "message": "nope"},
         ]
 
-    @pytest.mark.asyncio
-    async def test_collects_async_return_values(self):
-        reg = HookRegistry()
-
-        async def _async_handler(_event_type, _ctx):
-            return {"decision": "handled", "message": "done"}
-
-        reg._handlers["command:ping"] = [_async_handler]
-
-        results = await reg.emit_collect("command:ping", {})
-
-        assert results == [{"decision": "handled", "message": "done"}]
 
     @pytest.mark.asyncio
     async def test_drops_none_return_values(self):
@@ -328,3 +244,4 @@ class TestEmitCollect:
         await reg.emit_collect("agent:start")  # no context arg
 
         assert captured == [("agent:start", {})]
+

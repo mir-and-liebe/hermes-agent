@@ -48,6 +48,7 @@ from agent.context_checkpoint import (
     write_context_checkpoint,
 )
 from agent.context_pressure import classify_context_pressure
+from agent.auxiliary_client import AuxiliaryExplicitCancellation
 from agent.context_engine import (
     automatic_compaction_status_message,
     sanitize_memory_context,
@@ -214,6 +215,202 @@ def _cached_prompt_reflects_builtin_memory(agent: Any, cached_prompt: str) -> bo
     return True
 
 
+_COMPRESSOR_ATTEMPT_STATE_FIELDS = (
+    "_previous_summary",
+    "_summary_has_user_turn",
+    "compression_count",
+    "_last_compression_savings_pct",
+    "_ineffective_compression_count",
+    "_anti_thrash_recovery_deadline",
+    "_fallback_compression_streak",
+    "_verify_compaction_cleared_threshold",
+    "_last_compression_made_progress",
+    "_summary_failure_cooldown_until",
+    "_cooldown_persist_failed",
+    "_last_summary_error",
+    "_consecutive_timeout_failures",
+    "_last_summary_dropped_count",
+    "_last_summary_fallback_used",
+    "_last_compress_aborted",
+    "_last_summary_auth_failure",
+    "_last_summary_network_failure",
+    "_last_aux_model_failure_error",
+    "_last_aux_model_failure_model",
+    "_summary_model_fallen_back",
+    "summary_model",
+    "_last_compression_telemetry",
+    "_active_compression_telemetry",
+    "_compression_telemetry_seed",
+)
+
+_COMPRESSOR_COOLDOWN_STATE_FIELDS = (
+    "_summary_failure_cooldown_until",
+    "_last_summary_error",
+    "_cooldown_persist_failed",
+)
+
+
+def _snapshot_compressor_attempt_state(compressor: Any) -> dict[str, Any]:
+    """Copy only mutable bookkeeping owned by one compression attempt.
+
+    The explicit allow-list avoids copying provider clients, SessionDB handles,
+    locks, and plugin resources. Missing fields are intentionally ignored so
+    legacy and third-party compressors keep their existing contract.
+    """
+    try:
+        values = vars(compressor)
+    except TypeError:
+        return {}
+    selected = {
+        name: values[name]
+        for name in _COMPRESSOR_ATTEMPT_STATE_FIELDS
+        if name in values
+    }
+    # Copy the collection as one object so aliases between fields (notably
+    # _active_compression_telemetry and _last_compression_telemetry) survive.
+    return copy.deepcopy(selected)
+
+
+def _restore_compressor_attempt_state(
+    compressor: Any,
+    snapshot: dict[str, Any],
+    *,
+    durable_cooldown_authoritative: Optional[bool] = None,
+    durable_cooldown_state: Optional[dict[str, Any]] = None,
+) -> None:
+    """Restore the safe per-attempt snapshot after a pre-commit hard cancel."""
+    # A successful summary clears the durable cooldown before the outer commit
+    # boundary. Recreate (or clear) that row before restoring exact in-memory
+    # values, otherwise the next refresh would overwrite this rollback. Unknown
+    # durable state and intentionally unpersisted local cooldowns are never
+    # converted into destructive DB writes during cancellation.
+    if (
+        "_summary_failure_cooldown_until" in snapshot
+        and durable_cooldown_authoritative is not False
+        and (
+            durable_cooldown_authoritative is True
+            or not bool(snapshot.get("_cooldown_persist_failed", False))
+        )
+    ):
+        session_db = vars(compressor).get("_session_db")
+        session_id = vars(compressor).get("_session_id")
+        if session_db is not None and session_id:
+            if durable_cooldown_authoritative is True:
+                restorer = getattr(
+                    type(session_db),
+                    "restore_compression_failure_cooldown_row",
+                    None,
+                )
+                if not callable(restorer) or durable_cooldown_state is None:
+                    raise RuntimeError(
+                        "exact compression cooldown rollback API is unavailable"
+                    )
+                # This API restores raw columns (including expired and null
+                # combinations), verifies the read-back, and propagates failure.
+                restorer(
+                    session_db,
+                    session_id,
+                    copy.deepcopy(durable_cooldown_state),
+                )
+            else:
+                try:
+                    deadline = float(
+                        snapshot["_summary_failure_cooldown_until"] or 0.0
+                    )
+                    remaining = max(0.0, deadline - time.monotonic())
+                    durable_deadline = time.time() + remaining
+                    durable_error = snapshot.get("_last_summary_error")
+                    if remaining > 0:
+                        recorder = getattr(
+                            type(session_db),
+                            "record_compression_failure_cooldown",
+                            None,
+                        )
+                        if callable(recorder):
+                            recorder(
+                                session_db,
+                                session_id,
+                                durable_deadline,
+                                durable_error,
+                            )
+                    else:
+                        clearer = getattr(
+                            type(session_db),
+                            "clear_compression_failure_cooldown",
+                            None,
+                        )
+                        if callable(clearer):
+                            clearer(session_db, session_id)
+                except Exception:
+                    # Legacy/third-party compatibility path: its existing APIs
+                    # do not provide a verifiable transaction contract.
+                    logger.debug(
+                        "compression cooldown persistence rollback failed",
+                        exc_info=True,
+                    )
+    restored = copy.deepcopy(snapshot)
+    for name, value in restored.items():
+        setattr(compressor, name, value)
+
+
+def _capture_authoritative_cooldown_under_lease(
+    compressor: Any,
+    attempt_snapshot: dict[str, Any],
+) -> tuple[Optional[bool], Optional[dict[str, Any]]]:
+    """Refresh and snapshot built-in durable cooldown state under the lease.
+
+    Third-party compressors are deliberately not invoked here: arbitrary plugin
+    callbacks must not run while the session lease is held. A durable read
+    failure returns ``False`` so rollback cannot mistake unknown durable state
+    for an authoritative empty row and clear it; an unavailable legacy API
+    returns ``None`` and preserves the compatibility path.
+    """
+    try:
+        from agent.context_compressor import ContextCompressor
+
+        if not isinstance(compressor, ContextCompressor):
+            return None, None
+        values = vars(compressor)
+        session_db = values.get("_session_db")
+        session_id = values.get("_session_id")
+        raw_reader = (
+            getattr(
+                type(session_db), "get_compression_failure_cooldown_row", None
+            )
+            if session_db is not None
+            else None
+        )
+        if session_db is None or not session_id:
+            # Unbound compressors have no durable row to mutate or restore.
+            return None, None
+        if not callable(raw_reader):
+            return False, None
+        # Capture the exact persisted representation first. The active getter
+        # intentionally filters expired rows and therefore cannot serve as a
+        # lossless rollback snapshot.
+        durable_state = raw_reader(session_db, session_id)
+        if not isinstance(durable_state, dict):
+            raise TypeError("raw compression cooldown snapshot must be a mapping")
+        ContextCompressor.get_active_compression_failure_cooldown(
+            compressor,
+            refresh=True,
+        )
+    except Exception as exc:
+        logger.debug("authoritative compression cooldown capture failed: %s", exc)
+        return False, None
+    authoritative = getattr(
+        compressor, "_last_cooldown_refresh_was_authoritative", None
+    )
+    if authoritative is not True:
+        return authoritative, None
+
+    values = vars(compressor)
+    for name in _COMPRESSOR_COOLDOWN_STATE_FIELDS:
+        if name in values:
+            attempt_snapshot[name] = copy.deepcopy(values[name])
+    return True, copy.deepcopy(durable_state)
+
+
 class CompressionCommitFence:
     """Fence timeout cancellation against post-summary session mutation.
 
@@ -248,7 +445,7 @@ class CompressionCommitFence:
         """Seconds since the worker last reported forward progress."""
         return max(0.0, time.monotonic() - self._last_progress)
 
-    def cancel_before_commit(self) -> bool:
+    def cancel_before_commit(self, cancel_event: Any = None) -> bool:
         """Cancel a pending commit, or wait for an active commit to finish.
 
         Returns ``True`` when cancellation won before the commit boundary.
@@ -257,8 +454,12 @@ class CompressionCommitFence:
         """
         with self._lock:
             if self._commit_started:
+                if cancel_event is not None:
+                    cancel_event.set()
                 return False
             self._cancelled = True
+            if cancel_event is not None:
+                cancel_event.set()
             return True
 
     def try_cancel_before_commit(self) -> Optional[bool]:
@@ -277,10 +478,13 @@ class CompressionCommitFence:
         finally:
             self._lock.release()
 
-    def begin_commit(self) -> bool:
-        """Enter the commit boundary unless cancellation already won."""
+    def begin_commit(self, cancel_event: Any = None) -> bool:
+        """Atomically admit commit unless a hard cancellation already won."""
         self._lock.acquire()
-        if self._cancelled:
+        if self._cancelled or (
+            cancel_event is not None and bool(cancel_event.is_set())
+        ):
+            self._cancelled = True
             self._lock.release()
             return False
         self._commit_started = True
@@ -321,13 +525,21 @@ def _lock_api_is_absent_on_session_db(lock_db: Any) -> bool:
         return False
 
 
-def _refresh_persisted_compression_guards(compressor: Any) -> None:
+def _refresh_persisted_compression_guards(
+    compressor: Any,
+    *,
+    include_cooldown: bool = True,
+) -> None:
     """Refresh durable automatic-compression guards on a built-in compressor."""
-    method_calls = (
-        ("get_active_compression_failure_cooldown", {"refresh": True}),
+    method_calls = [
         ("_load_fallback_compression_streak", {}),
         ("_load_ineffective_compression_count", {}),
-    )
+    ]
+    if include_cooldown:
+        method_calls.insert(
+            0,
+            ("get_active_compression_failure_cooldown", {"refresh": True}),
+        )
     for method_name, kwargs in method_calls:
         method = getattr(type(compressor), method_name, None)
         if not callable(method):
@@ -1312,6 +1524,11 @@ def compress_context(
         prompt — the session is NOT rotated.  Callers should detect the
         no-op via ``len(returned) == len(input)`` and stop the retry loop.
     """
+    _compressor_attempt_snapshot = _snapshot_compressor_attempt_state(
+        agent.context_compressor
+    )
+    _durable_cooldown_authoritative: Optional[bool] = None
+    _durable_cooldown_state: Optional[dict[str, Any]] = None
     if (
         defer_context_engine_notification
         and callable(getattr(agent, _PENDING_CONTEXT_ENGINE_NOTIFICATION, None))
@@ -1357,8 +1574,13 @@ def compress_context(
     if getattr(agent, "api_mode", None) == "codex_app_server":
         _codex_fence_entered = False
         if commit_fence is not None:
-            _codex_fence_entered = commit_fence.begin_commit()
+            _codex_fence_entered = commit_fence.begin_commit(
+                getattr(agent, "_hard_interrupt_requested", None)
+            )
             if not _codex_fence_entered:
+                _restore_compressor_attempt_state(
+                    agent.context_compressor, _compressor_attempt_snapshot
+                )
                 existing_prompt = getattr(agent, "_cached_system_prompt", None)
                 if not existing_prompt:
                     existing_prompt = agent._build_system_prompt(system_message)
@@ -1416,7 +1638,10 @@ def compress_context(
     # `name #N` renumber, no contextvar/env/logging re-sync, no memory/context-
     # engine session-switch. The conversation keeps one durable id for life,
     # eliminating the session-rotation bug cluster. Default True (2107b86024).
-    in_place = bool(getattr(agent, "compression_in_place", False))
+    # Default True matches DEFAULT_CONFIG / #38763. A missing attribute must
+    # NOT fall back to rotation mode — that re-enables the pre-lease drift
+    # path and can wedge busy sessions that never set the flag.
+    in_place = bool(getattr(agent, "compression_in_place", True))
     # Set True once the in-place DB write actually completes (the DB block can
     # raise and skip it). Surfaced to the gateway via agent._last_compaction_in_place.
     compacted_in_place = False
@@ -1683,13 +1908,36 @@ def compress_context(
             )
             return messages, _existing_sp
 
+    # Snapshot the authoritative durable cooldown only after this attempt owns
+    # the session lease. This runs for force=True too, but does not apply the
+    # automatic breaker gate: manual compression still retries immediately.
+    _durable_cooldown_authoritative, _durable_cooldown_state = (
+        _capture_authoritative_cooldown_under_lease(
+            agent.context_compressor,
+            _compressor_attempt_snapshot,
+        )
+    )
+    if _durable_cooldown_authoritative is False:
+        # A bound built-in compressor reached its durable getter and the read
+        # failed. Proceeding with force=True could clear an unknown newer row
+        # before cancellation has enough information to restore it. This is a
+        # persistence-safety abort, not automatic breaker gating.
+        _release_lock()
+        existing_prompt = getattr(agent, "_cached_system_prompt", None)
+        if not existing_prompt:
+            existing_prompt = agent._build_system_prompt(system_message)
+        return messages, existing_prompt
+
     # The agent may have been constructed before another path completed an
     # in-place compaction on the same session. Re-read durable breaker state
     # after acquiring the session lock so this final gate cannot act on the
     # stale snapshot loaded by bind_session_state().
     if not force:
         compressor = agent.context_compressor
-        _refresh_persisted_compression_guards(compressor)
+        _refresh_persisted_compression_guards(
+            compressor,
+            include_cooldown=False,
+        )
         blocked = getattr(
             type(compressor),
             "_automatic_compression_blocked",
@@ -1752,6 +2000,7 @@ def compress_context(
             logger.warning("Context checkpoint write failed before compression: %s", _checkpoint_err)
 
     _activity_heartbeat: Optional[_CompressionActivityHeartbeat] = None
+    messages_before_compression = None
     try:
         if _lock_holder is not None:
             _lock_refresher = _CompressionLockLeaseRefresher(
@@ -1776,6 +2025,13 @@ def compress_context(
         # non-destructive — pre-compaction rows are soft-archived (active=0,
         # compacted=1), stay searchable and recoverable, so snapshot/durable
         # drift cannot lose data there and must not abort compaction.
+        #
+        # When durable DID grow, ADOPT it and continue rather than aborting.
+        # Aborting returned the stale snapshot unchanged, so busy sessions
+        # (memory review / shared session_id writers) stayed permanently
+        # behind the DB: every /compress and auto-compress saw
+        # "changed before lease acquisition", surfaced as the misleading
+        # "No changes from compression", and never reclaimed tokens.
         if not in_place and _lock_db is not None and _lock_sid:
             durable_loader = getattr(
                 type(_lock_db), "get_messages_as_conversation", None
@@ -1783,16 +2039,19 @@ def compress_context(
             if callable(durable_loader):
                 durable_parent = durable_loader(_lock_db, _lock_sid)
                 if isinstance(durable_parent, list) and len(durable_parent) > len(messages):
-                    logger.warning(
-                        "compression aborted: session=%s changed before lease "
-                        "acquisition; preserving newer durable messages",
+                    logger.info(
+                        "compression: session=%s grew before lease "
+                        "(%d → %d msgs); adopting durable snapshot",
                         _lock_sid,
+                        len(messages),
+                        len(durable_parent),
                     )
-                    _release_lock()
-                    existing_prompt = getattr(agent, "_cached_system_prompt", None)
-                    if not existing_prompt:
-                        existing_prompt = agent._build_system_prompt(system_message)
-                    return messages, existing_prompt
+                    messages = durable_parent
+                    _pre_msg_count = len(messages)
+                    # Token estimate was for the stale snapshot; clear it so
+                    # the compressor re-derives from the adopted transcript
+                    # instead of under-counting the newly visible rows.
+                    approx_tokens = 0
 
         # Notify external memory provider before compression discards context.
         # The provider's on_pre_compress() may return a string of insights it
@@ -1850,13 +2109,74 @@ def compress_context(
         # provider that keeps the connection alive forever is cut off at the
         # streamed total ceiling (see _aux_stream_total_ceiling) instead of
         # outliving the SDK's inactivity timeout indefinitely.
-        from agent.auxiliary_client import aux_progress_hook
+        from agent.auxiliary_client import (
+            aux_interrupt_protection,
+            aux_progress_hook,
+        )
         _progress_hook = (
             commit_fence.touch_progress if commit_fence is not None
             else (lambda: None)
         )
-        with aux_progress_hook(_progress_hook):
+        # Incoming-message interrupts and active-turn redirects must not tear an
+        # atomic summary in half (#23975). Explicit stop surfaces set a separate
+        # Event atomically; never infer cause from the racy message fields.
+        _hard_cancel_event = getattr(agent, "_hard_interrupt_requested", None)
+        with aux_progress_hook(_progress_hook), aux_interrupt_protection(
+            cancel_event=_hard_cancel_event
+        ):
             compressed = compress_fn(messages, **compress_kwargs)
+            # Freeze a hard stop that arrived after the final provider attempt
+            # unwound but before this transaction can rotate session state.
+            if _hard_cancel_event is not None and _hard_cancel_event.is_set():
+                raise AuxiliaryExplicitCancellation()
+    except AuxiliaryExplicitCancellation:
+        try:
+            _restore_compressor_attempt_state(
+                agent.context_compressor,
+                _compressor_attempt_snapshot,
+                durable_cooldown_authoritative=_durable_cooldown_authoritative,
+                durable_cooldown_state=_durable_cooldown_state,
+            )
+        except BaseException as _rollback_exc:
+            # Compensation failure must surface, but it must not strand the
+            # session lease or retain an in-memory transcript mutation.
+            if (
+                messages_before_compression is not None
+                and messages != messages_before_compression
+            ):
+                messages[:] = copy.deepcopy(messages_before_compression)
+            if _activity_heartbeat is not None:
+                _activity_heartbeat.stop("context compression rollback failed")
+                _activity_heartbeat = None
+            _release_lock()
+            _emit_compression_attempt_telemetry(
+                agent,
+                started_at=_attempt_started_at,
+                commit_status="aborted",
+                split_status="aborted",
+                failure_class=f"rollback:{type(_rollback_exc).__name__}",
+            )
+            raise
+        if (
+            messages_before_compression is not None
+            and messages != messages_before_compression
+        ):
+            messages[:] = copy.deepcopy(messages_before_compression)
+        if _activity_heartbeat is not None:
+            _activity_heartbeat.stop("context compression cancelled")
+            _activity_heartbeat = None
+        _release_lock()
+        _emit_compression_attempt_telemetry(
+            agent,
+            started_at=_attempt_started_at,
+            commit_status="aborted",
+            split_status="aborted",
+            failure_class="explicit_interrupt",
+        )
+        _existing_sp = getattr(agent, "_cached_system_prompt", None)
+        if not _existing_sp:
+            _existing_sp = agent._build_system_prompt(system_message)
+        return messages, _existing_sp
     except BaseException as _compress_exc:
         # ANY exception after lock acquisition — memory hook, capability
         # inspection, engine lookup, or compress() — must release the lock so
@@ -1888,6 +2208,9 @@ def compress_context(
         )
         _compression_used_fallback = bool(
             getattr(agent.context_compressor, "_last_summary_fallback_used", False)
+        )
+        _compression_feasibility_skip = bool(
+            getattr(agent.context_compressor, "_last_feasibility_skip", False)
         )
 
         # If compression aborted (aux LLM failed to produce a usable summary)
@@ -1966,8 +2289,19 @@ def compress_context(
             return messages, _existing_sp
 
         if commit_fence is not None:
-            _commit_fence_entered = commit_fence.begin_commit()
+            _commit_fence_entered = commit_fence.begin_commit(_hard_cancel_event)
             if not _commit_fence_entered:
+                _restore_compressor_attempt_state(
+                    agent.context_compressor,
+                    _compressor_attempt_snapshot,
+                    durable_cooldown_authoritative=_durable_cooldown_authoritative,
+                    durable_cooldown_state=_durable_cooldown_state,
+                )
+                if (
+                    messages_before_compression is not None
+                    and messages != messages_before_compression
+                ):
+                    messages[:] = copy.deepcopy(messages_before_compression)
                 logger.info(
                     "Compression commit cancelled before session mutation "
                     "(session=%s).",
@@ -2091,14 +2425,13 @@ def compress_context(
             # (same startswith gate as the restore path); otherwise the
             # request layer falls back to the legacy single-breakpoint
             # layout with the prompt bytes untouched.
-            try:
-                from agent.system_prompt import build_system_prompt_parts as _build_parts
+            from agent.system_prompt import reconstruct_static_prefix
 
-                _static = _build_parts(agent, system_message=system_message)["stable"]
-                if _static and cached_system_prompt.startswith(_static):
-                    agent._cached_system_prompt_static = _static
-            except Exception:
-                pass
+            reconstruct_static_prefix(
+                agent,
+                system_message=system_message,
+                log_label="compression keep-prompt",
+            )
         else:
             new_system_prompt = agent._build_system_prompt(system_message)
             agent._cached_system_prompt = new_system_prompt
@@ -2416,6 +2749,7 @@ def compress_context(
                 record_boundary(
                     agent.context_compressor,
                     used_fallback=_compression_used_fallback,
+                    feasibility_skip=_compression_feasibility_skip,
                 )
             else:
                 agent.context_compressor._verify_compaction_cleared_threshold = True
@@ -2789,16 +3123,28 @@ def try_shrink_image_parts_in_messages(
             media_type = "image/jpeg"
         return f"data:{media_type};base64,{data}"
 
-    def _write_data_url_to_source(source: dict, data_url: str) -> None:
+    def _write_data_url_to_source(source: dict, data_url: str) -> dict:
+        """Return a NEW source dict carrying the re-encoded payload.
+
+        Copy-on-write: content parts on the per-call ``api_messages`` list may
+        be shared references into the persistent conversation history (the
+        per-message copy is shallow, and cache decoration only deep-copies the
+        marked messages). Mutating the existing dict would rewrite the stored
+        transcript with the degraded image — so the caller replaces the part,
+        never edits it in place.
+        """
         header, _, data = data_url.partition(",")
         media_type = "image/jpeg"
         if header.startswith("data:"):
             candidate = header[len("data:"):].split(";", 1)[0].strip()
             if candidate.startswith("image/"):
                 media_type = candidate
-        source["type"] = "base64"
-        source["media_type"] = media_type
-        source["data"] = data
+        return {
+            **source,
+            "type": "base64",
+            "media_type": media_type,
+            "data": data,
+        }
 
     for msg in api_messages:
         if not isinstance(msg, dict):
@@ -2806,7 +3152,13 @@ def try_shrink_image_parts_in_messages(
         content = msg.get("content")
         if not isinstance(content, list):
             continue
-        for part in content:
+        # Copy-on-write per message: never mutate part/source dicts in place —
+        # they can alias the stored conversation history (see
+        # _write_data_url_to_source). Build a replacement content list on the
+        # first shrunken part and reassign msg["content"] (a top-level write on
+        # the per-call message copy, which never reaches history).
+        new_content: list | None = None
+        for part_idx, part in enumerate(content):
             if not isinstance(part, dict):
                 continue
             ptype = part.get("type")
@@ -2815,7 +3167,12 @@ def try_shrink_image_parts_in_messages(
                 url = _source_to_data_url(source)
                 resized, unshrinkable = _shrink_data_url(url or "")
                 if resized and isinstance(source, dict):
-                    _write_data_url_to_source(source, resized)
+                    if new_content is None:
+                        new_content = list(content)
+                    new_content[part_idx] = {
+                        **part,
+                        "source": _write_data_url_to_source(source, resized),
+                    }
                     changed_count += 1
                 elif unshrinkable:
                     unshrinkable_oversized += 1
@@ -2829,17 +3186,26 @@ def try_shrink_image_parts_in_messages(
                 url = image_value.get("url", "")
                 resized, unshrinkable = _shrink_data_url(url)
                 if resized:
-                    image_value["url"] = resized
+                    if new_content is None:
+                        new_content = list(content)
+                    new_content[part_idx] = {
+                        **part,
+                        "image_url": {**image_value, "url": resized},
+                    }
                     changed_count += 1
                 elif unshrinkable:
                     unshrinkable_oversized += 1
             elif isinstance(image_value, str):
                 resized, unshrinkable = _shrink_data_url(image_value)
                 if resized:
-                    part["image_url"] = resized
+                    if new_content is None:
+                        new_content = list(content)
+                    new_content[part_idx] = {**part, "image_url": resized}
                     changed_count += 1
                 elif unshrinkable:
                     unshrinkable_oversized += 1
+        if new_content is not None:
+            msg["content"] = new_content
 
     if changed_count:
         logger.info(

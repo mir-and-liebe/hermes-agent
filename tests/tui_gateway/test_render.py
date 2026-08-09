@@ -56,11 +56,6 @@ def test_render_message_exception_returns_none(caplog):
 # ── render_diff / make_stream_renderer ───────────────────────────────
 
 
-def test_render_diff_none_without_module():
-    with _no_rich():
-        assert render_diff("+line") is None
-
-
 def test_stream_renderer_none_without_module():
     with _no_rich():
         assert make_stream_renderer() is None

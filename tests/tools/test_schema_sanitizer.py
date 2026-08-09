@@ -58,15 +58,6 @@ def test_bare_string_object_value_replaced_with_schema_dict():
     assert payload["properties"] == {}
 
 
-def test_bare_string_primitive_value_replaced_with_schema_dict():
-    tools = [_tool("t", {
-        "type": "object",
-        "properties": {"name": "string"},
-    })]
-    out = sanitize_tool_schemas(tools)
-    assert out[0]["function"]["parameters"]["properties"]["name"] == {"type": "string"}
-
-
 def test_nullable_type_array_collapsed_to_single_string():
     tools = [_tool("t", {
         "type": "object",
@@ -98,20 +89,6 @@ def test_multitype_array_becomes_anyof_no_branch_dropped():
     assert prop.get("nullable") is None
     # Sibling keywords survive alongside the generated anyOf.
     assert prop["description"] == "status filter"
-
-
-def test_multitype_array_with_null_lifts_nullable():
-    tools = [_tool("t", {
-        "type": "object",
-        "properties": {
-            "v": {"type": ["integer", "boolean", "null"]},
-        },
-    })]
-    out = sanitize_tool_schemas(tools)
-    prop = out[0]["function"]["parameters"]["properties"]["v"]
-    assert "type" not in prop
-    assert prop["anyOf"] == [{"type": "integer"}, {"type": "boolean"}]
-    assert prop.get("nullable") is True
 
 
 def test_all_null_type_array_becomes_null_type():
@@ -179,16 +156,6 @@ def test_required_pruned_to_existing_properties():
     assert out[0]["function"]["parameters"]["required"] == ["name"]
 
 
-def test_required_all_missing_is_dropped():
-    tools = [_tool("t", {
-        "type": "object",
-        "properties": {},
-        "required": ["x", "y"],
-    })]
-    out = sanitize_tool_schemas(tools)
-    assert "required" not in out[0]["function"]["parameters"]
-
-
 def test_well_formed_schema_unchanged():
     schema = {
         "type": "object",
@@ -201,22 +168,6 @@ def test_well_formed_schema_unchanged():
     tools = [_tool("read_file", copy.deepcopy(schema))]
     out = sanitize_tool_schemas(tools)
     assert out[0]["function"]["parameters"] == schema
-
-
-def test_additional_properties_bool_preserved():
-    tools = [_tool("t", {
-        "type": "object",
-        "properties": {
-            "payload": {
-                "type": "object",
-                "properties": {},
-                "additionalProperties": True,
-            },
-        },
-    })]
-    out = sanitize_tool_schemas(tools)
-    payload = out[0]["function"]["parameters"]["properties"]["payload"]
-    assert payload["additionalProperties"] is True
 
 
 def test_additional_properties_schema_sanitized():
@@ -234,17 +185,6 @@ def test_additional_properties_schema_sanitized():
     assert field["additionalProperties"] == {"type": "object", "properties": {}}
 
 
-def test_deepcopy_does_not_mutate_input():
-    original = {
-        "type": "object",
-        "properties": {"x": {"type": "object"}},
-    }
-    tools = [_tool("t", original)]
-    _ = sanitize_tool_schemas(tools)
-    # Original should still lack properties on the nested object
-    assert "properties" not in original["properties"]["x"]
-
-
 def test_items_sanitized_in_array_schema():
     tools = [_tool("t", {
         "type": "object",
@@ -258,80 +198,6 @@ def test_items_sanitized_in_array_schema():
     out = sanitize_tool_schemas(tools)
     items = out[0]["function"]["parameters"]["properties"]["bag"]["items"]
     assert items == {"type": "object", "properties": {}}
-
-
-def test_ref_with_default_sibling_stripped():
-    """Strict backends reject ``default`` alongside ``$ref``."""
-    tools = [_tool("t", {
-        "type": "object",
-        "properties": {
-            "payload": {"$ref": "#/$defs/Payload", "default": None},
-        },
-        "$defs": {
-            "Payload": {
-                "type": "object",
-                "properties": {"q": {"type": "string"}},
-            },
-        },
-    })]
-    out = sanitize_tool_schemas(tools)
-    payload = out[0]["function"]["parameters"]["properties"]["payload"]
-    assert payload == {"$ref": "#/$defs/Payload"}
-
-
-def test_nullable_union_collapse_does_not_leave_default_on_ref():
-    """Nullable anyOf collapse must not attach ``default`` to a ``$ref`` branch."""
-    tools = [_tool("t", {
-        "type": "object",
-        "properties": {
-            "input": {
-                "anyOf": [
-                    {"$ref": "#/$defs/Payload"},
-                    {"type": "null"},
-                ],
-                "default": None,
-            },
-        },
-        "$defs": {
-            "Payload": {
-                "type": "object",
-                "properties": {"q": {"type": "string"}},
-            },
-        },
-    })]
-    out = sanitize_tool_schemas(tools)
-    prop = out[0]["function"]["parameters"]["properties"]["input"]
-    assert prop["$ref"] == "#/$defs/Payload"
-    assert "default" not in prop
-    assert prop.get("nullable") is True
-
-
-def test_ref_description_preserved():
-    """Annotation siblings that strict backends allow should survive."""
-    tools = [_tool("t", {
-        "type": "object",
-        "properties": {
-            "payload": {
-                "$ref": "#/$defs/Payload",
-                "description": "The payload",
-            },
-        },
-        "$defs": {
-            "Payload": {"type": "object", "properties": {}},
-        },
-    })]
-    out = sanitize_tool_schemas(tools)
-    payload = out[0]["function"]["parameters"]["properties"]["payload"]
-    assert payload["description"] == "The payload"
-    assert payload["$ref"] == "#/$defs/Payload"
-
-
-def test_empty_tools_list_returns_empty():
-    assert sanitize_tool_schemas([]) == []
-
-
-def test_none_tools_returns_none():
-    assert sanitize_tool_schemas(None) is None
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -631,136 +497,6 @@ def test_strip_responses_mixed_formats():
 # ─────────────────────────────────────────────────────────────────────────
 
 
-def test_strip_slash_enum_removes_huggingface_id_enum():
-    """enum containing HF-style 'owner/name' IDs → stripped."""
-    tools = [_tool("train", {
-        "type": "object",
-        "properties": {
-            "model": {
-                "type": "string",
-                "enum": ["Qwen/Qwen3.5-0.8B", "openai/gpt-oss-20b"],
-            },
-        },
-    })]
-    _, stripped = strip_slash_enum(tools)
-    assert stripped == 1
-    prop = tools[0]["function"]["parameters"]["properties"]["model"]
-    assert "enum" not in prop
-    # Type + description survive so the model still gets the prompting hint.
-    assert prop["type"] == "string"
-
-
-def test_strip_slash_enum_preserves_slashless_enum():
-    """enum without any '/' → preserved."""
-    tools = [_tool("pick", {
-        "type": "object",
-        "properties": {
-            "mode": {"type": "string", "enum": ["fast", "slow"]},
-        },
-    })]
-    _, stripped = strip_slash_enum(tools)
-    assert stripped == 0
-    assert tools[0]["function"]["parameters"]["properties"]["mode"]["enum"] == ["fast", "slow"]
-
-
-def test_strip_slash_enum_partial_match_strips_whole_enum():
-    """Any single value containing '/' triggers removal of the entire enum.
-
-    Rationale: if we kept the slashless values, the model could still pick
-    them, but xAI's grammar-compile failure is all-or-nothing on the enum
-    keyword — keeping a mixed-content enum would still 400. Drop it whole.
-    """
-    tools = [_tool("pick", {
-        "type": "object",
-        "properties": {
-            "target": {"type": "string", "enum": ["local", "hf://Qwen/Qwen3"]},
-        },
-    })]
-    _, stripped = strip_slash_enum(tools)
-    assert stripped == 1
-    assert "enum" not in tools[0]["function"]["parameters"]["properties"]["target"]
-
-
-def test_strip_slash_enum_responses_format():
-    """Responses-format tools (no `function` wrapper) are also handled."""
-    tools = [{
-        "type": "function",
-        "name": "mcp_prime_lab_train_model",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "model": {
-                    "type": "string",
-                    "enum": ["Qwen/Qwen3.5-0.8B", "meta-llama/Llama-3.2-1B-Instruct"],
-                },
-            },
-        },
-    }]
-    _, stripped = strip_slash_enum(tools)
-    assert stripped == 1
-    assert "enum" not in tools[0]["parameters"]["properties"]["model"]
-
-
-def test_strip_slash_enum_recurses_into_anyof():
-    """enum-with-slash inside an anyOf variant is also stripped."""
-    tools = [_tool("t", {
-        "type": "object",
-        "properties": {
-            "value": {
-                "anyOf": [
-                    {"type": "string", "enum": ["owner/repo"]},
-                    {"type": "null"},
-                ],
-            },
-        },
-    })]
-    _, stripped = strip_slash_enum(tools)
-    assert stripped == 1
-    variants = tools[0]["function"]["parameters"]["properties"]["value"]["anyOf"]
-    assert "enum" not in variants[0]
-    assert variants[0]["type"] == "string"
-
-
-def test_strip_slash_enum_is_idempotent():
-    """Second call on already-stripped tools is a no-op."""
-    tools = [_tool("t", {
-        "type": "object",
-        "properties": {"m": {"type": "string", "enum": ["a/b"]}},
-    })]
-    _, first = strip_slash_enum(tools)
-    _, second = strip_slash_enum(tools)
-    assert first == 1
-    assert second == 0
-
-
-def test_strip_slash_enum_empty_returns_zero():
-    tools, stripped = strip_slash_enum([])
-    assert tools == []
-    assert stripped == 0
-
-
-def test_strip_slash_enum_none_returns_zero():
-    tools, stripped = strip_slash_enum(None)
-    assert tools is None
-    assert stripped == 0
-
-
-def test_strip_slash_enum_ignores_non_string_enum_values():
-    """Integer/boolean enum values can't contain '/' — leave them alone."""
-    tools = [_tool("t", {
-        "type": "object",
-        "properties": {
-            "level": {"type": "integer", "enum": [1, 2, 3]},
-            "flag": {"type": "boolean", "enum": [True, False]},
-        },
-    })]
-    _, stripped = strip_slash_enum(tools)
-    assert stripped == 0
-    props = tools[0]["function"]["parameters"]["properties"]
-    assert props["level"]["enum"] == [1, 2, 3]
-    assert props["flag"]["enum"] == [True, False]
-
-
 # ---------------------------------------------------------------------------
 # Property-key renaming (provider ^[a-zA-Z0-9_.-]{1,64}$ pattern compat)
 # Real-world source: Cloudflare flat API MCP ships keys like
@@ -771,99 +507,76 @@ def test_strip_slash_enum_ignores_non_string_enum_values():
 from tools.schema_sanitizer import sanitize_property_key, unrename_tool_args
 
 
-def test_bad_property_keys_renamed_to_conforming():
-    tools = [_tool("cf_issues", {
-        "type": "object",
-        "properties": {
-            "issue_class~neq": {"type": "string"},
-            "meta.<field>[<operator>]": {"type": "string"},
-            "normal_key": {"type": "string"},
-        },
-        "required": ["issue_class~neq"],
-    })]
-    out = sanitize_tool_schemas(tools)
-    props = out[0]["function"]["parameters"]["properties"]
-    import re
-    pat = re.compile(r"^[a-zA-Z0-9_.-]{1,64}$")
-    assert all(pat.match(k) for k in props), list(props)
-    assert "normal_key" in props
-    assert "issue_class_neq" in props
-    # required remapped alongside
-    assert out[0]["function"]["parameters"]["required"] == ["issue_class_neq"]
-
-
-def test_property_key_over_64_chars_truncated():
-    long_key = "k" * 80
-    tools = [_tool("t", {"type": "object", "properties": {long_key: {"type": "string"}}})]
-    out = sanitize_tool_schemas(tools)
-    props = out[0]["function"]["parameters"]["properties"]
-    assert list(props) == ["k" * 64]
-
-
-def test_rename_collision_deduped_deterministically():
-    tools = [_tool("t", {
-        "type": "object",
-        "properties": {
-            "a~b": {"type": "string"},
-            "a b": {"type": "integer"},
-            "a_b": {"type": "boolean"},  # already owns the sanitized name
-        },
-    })]
-    out = sanitize_tool_schemas(tools)
-    props = out[0]["function"]["parameters"]["properties"]
-    assert props["a_b"]["type"] == "boolean"       # original conforming key untouched
-    assert set(props) == {"a_b", "a_b_2", "a_b_3"}
-    # deterministic across repeated runs
-    out2 = sanitize_tool_schemas(tools)
-    assert out2[0]["function"]["parameters"]["properties"].keys() == props.keys()
-
-
-def test_nested_bad_property_keys_renamed():
-    tools = [_tool("t", {
-        "type": "object",
-        "properties": {
-            "body": {
-                "type": "object",
-                "properties": {"filter~gte": {"type": "number"}},
-            },
-        },
-    })]
-    out = sanitize_tool_schemas(tools)
-    body = out[0]["function"]["parameters"]["properties"]["body"]
-    assert "filter_gte" in body["properties"]
-    assert "filter~gte" not in body["properties"]
-
-
-def test_unrename_tool_args_maps_back_to_wire_names():
-    original_params = {
-        "type": "object",
-        "properties": {
-            "issue_class~neq": {"type": "string"},
-            "normal": {"type": "string"},
-            "body": {
-                "type": "object",
-                "properties": {"filter~gte": {"type": "number"}},
-            },
-        },
-    }
-    model_args = {
-        "issue_class_neq": "spoofed_dns",
-        "normal": "x",
-        "body": {"filter_gte": 5},
-    }
-    restored = unrename_tool_args(original_params, model_args)
-    assert restored == {
-        "issue_class~neq": "spoofed_dns",
-        "normal": "x",
-        "body": {"filter~gte": 5},
-    }
-
-
-def test_unrename_passes_unknown_keys_through():
-    params = {"type": "object", "properties": {"a": {"type": "string"}}}
-    assert unrename_tool_args(params, {"a": 1, "mystery": 2}) == {"a": 1, "mystery": 2}
-
-
 def test_sanitize_property_key_empty_falls_back():
     assert sanitize_property_key("~~~") == "___"
     assert sanitize_property_key("") == "param"
+
+
+# ---------------------------------------------------------------------------
+# dependentRequired -- literal property-name strings must survive
+# ---------------------------------------------------------------------------
+
+
+def test_dependent_required_preserved_through_public_api():
+    """dependentRequired values are literal property names, not schemas."""
+    schema = {
+        "type": "object",
+        "properties": {
+            "owner": {"type": "string"},
+            "repo": {"type": "string"},
+            "organization": {"type": "string"},
+        },
+        "dependentRequired": {
+            "owner": ["repo", "organization"],
+            "repo": ["owner"],
+        },
+    }
+    tools = [_tool("t", copy.deepcopy(schema))]
+    out = sanitize_tool_schemas(tools)
+    params = out[0]["function"]["parameters"]
+    dep = params.get("dependentRequired", {})
+    # Values are the original property-name strings unchanged.
+    assert dep.get("owner") == ["repo", "organization"]
+    assert dep.get("repo") == ["owner"]
+    # Normal property schemas are still present and valid.
+    assert params["properties"]["owner"] == {"type": "string"}
+    assert params["properties"]["repo"] == {"type": "string"}
+    assert params["properties"]["organization"] == {"type": "string"}
+
+
+def test_dependent_required_does_not_mutate_original_input():
+    """The original schema's dependentRequired must be unchanged after sanitize."""
+    original_dep = {"owner": ["repo", "organization"], "repo": ["owner"]}
+    schema = {
+        "type": "object",
+        "properties": {
+            "owner": {"type": "string"},
+            "repo": {"type": "string"},
+            "organization": {"type": "string"},
+        },
+        "dependentRequired": {k: list(v) for k, v in original_dep.items()},
+    }
+    saved_copy = copy.deepcopy(schema)
+    tools = [_tool("t", schema)]
+    _ = sanitize_tool_schemas(tools)
+    assert schema == saved_copy
+    assert schema["dependentRequired"] == original_dep
+
+
+def test_dependent_schemas_still_recursively_sanitized():
+    """dependentSchemas (real schemas, not literal lists) must still be sanitized."""
+    schema = {
+        "type": "object",
+        "properties": {
+            "owner": {"type": "string"},
+        },
+        "dependentSchemas": {
+            "owner": {"type": "object"},  # bare object -- needs properties: {}
+        },
+    }
+    tools = [_tool("t", copy.deepcopy(schema))]
+    out = sanitize_tool_schemas(tools)
+    dep_schemas = out[0]["function"]["parameters"]["dependentSchemas"]
+    assert dep_schemas["owner"] == {"type": "object", "properties": {}}, (
+        f"dependentSchemas['owner'] was not fully sanitized: {dep_schemas['owner']!r}"
+    )

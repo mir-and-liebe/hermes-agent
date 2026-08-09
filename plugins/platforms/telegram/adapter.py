@@ -7546,6 +7546,41 @@ class TelegramAdapter(BasePlatformAdapter):
                 exc_info=True,
             )
 
+    async def stop_typing(self, chat_id: str) -> None:
+        """Stop the typing indicator by delivering an invisible message.
+
+        Telegram has no stop-typing Bot API method, so the only way to
+        clear the ``sendChatAction("typing")`` state is to deliver a new
+        message (Telegram clears typing on message delivery).  We send
+        an invisible zero-width-space message and delete it immediately
+        — no visible artifact for the user.
+
+        The ``_keep_typing`` loop in the base gateway runs as a separate
+        async task and can fire a ``sendChatAction("typing")`` *after*
+        the final response message clears the typing state, re-arming
+        Telegram's ~5s timer with nothing left to clear it (see #48678).
+        This method is called by ``_stop_typing_refresh`` after it
+        cancels the refresh loop, ensuring any in-flight typing ping is
+        overridden by the message delivery, regardless of ordering.
+        """
+        if not self._bot:
+            return
+        try:
+            normalized = normalize_telegram_chat_id(chat_id)
+            msg = await self._bot.send_message(
+                chat_id=normalized,
+                text="\u200B",  # Zero-width space — invisible on screen
+                disable_notification=True,
+                disable_web_page_preview=True,
+            )
+            await self._bot.delete_message(
+                chat_id=normalized,
+                message_id=msg.message_id,
+            )
+        except Exception:
+            # Best-effort; typing clear failures are non-fatal.
+            pass
+
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Get information about a Telegram chat."""
         if not self._bot:

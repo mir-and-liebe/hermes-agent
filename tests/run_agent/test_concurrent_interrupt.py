@@ -58,6 +58,13 @@ def _make_agent(monkeypatch):
         def _touch_activity(self, desc):
             self._last_activity = time.time()
 
+        def _flush_messages_to_session_db(self, messages, conversation_history=None):
+            # No-op persistence for the stub: the merged concurrent executor
+            # aborts the per-tool result loop when the incremental session-DB
+            # flush fails, which would drop the cancelled tool's interrupt
+            # message this test asserts on. Real AIAgent instances persist.
+            return True
+
         def _vprint(self, msg, force=False):
             pass
 

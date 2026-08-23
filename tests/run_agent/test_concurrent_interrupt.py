@@ -100,7 +100,7 @@ def _make_agent(monkeypatch):
     stub._tool_guardrails = _AllowGuardrails()
     stub._tool_guardrail_halt_decision = None
     stub._append_guardrail_observation = (
-        lambda tool_name, function_args, function_result, *, failed: function_result
+        lambda tool_name, function_args, function_result, *, failed, tool_call_id="": function_result
     )
     stub._invoke_tool = MagicMock(side_effect=lambda *a, **kw: '{"ok": true}')
     return stub
